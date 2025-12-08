@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,8 @@ type Model struct {
 	showHelp        bool
 	transcript      string
 	transcriptDirty bool
+	// chatStatusHeight 为滚动状态栏预留高度。
+	chatStatusHeight int
 }
 
 type streamEvent struct {
@@ -195,31 +198,32 @@ func New(opts Options) Model {
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
 
 	m := Model{
-		textarea:        ti,
-		viewport:        vp,
-		eventsPane:      evp,
-		search:          search,
-		sessions:        sessions,
-		modelName:       opts.Model,
-		reasoning:       opts.Reasoning,
-		sandbox:         opts.Sandbox,
-		language:        i18n.Normalize(opts.Language).Code(),
-		workdir:         opts.Workdir,
-		policy:          opts.Policy,
-		runner:          runner,
-		engine:          toolengine.New(opts.Policy, runner, approver, opts.Workdir),
-		roots:           opts.Roots,
-		approver:        approver,
-		initSend:        opts.InitialPrompt,
-		streamIdx:       -1,
-		mentionAt:       -1,
-		pickingSession:  opts.ResumePicker,
-		resumeSessionID: opts.ResumeSessionID,
-		width:           90,
-		height:          24,
-		eventsWidth:     32,
-		spin:            spin,
-		transcriptDirty: true,
+		textarea:         ti,
+		viewport:         vp,
+		eventsPane:       evp,
+		search:           search,
+		sessions:         sessions,
+		modelName:        opts.Model,
+		reasoning:        opts.Reasoning,
+		sandbox:          opts.Sandbox,
+		language:         i18n.Normalize(opts.Language).Code(),
+		workdir:          opts.Workdir,
+		policy:           opts.Policy,
+		runner:           runner,
+		engine:           toolengine.New(opts.Policy, runner, approver, opts.Workdir),
+		roots:            opts.Roots,
+		approver:         approver,
+		initSend:         opts.InitialPrompt,
+		streamIdx:        -1,
+		mentionAt:        -1,
+		pickingSession:   opts.ResumePicker,
+		resumeSessionID:  opts.ResumeSessionID,
+		width:            90,
+		height:           24,
+		eventsWidth:      32,
+		spin:             spin,
+		transcriptDirty:  true,
+		chatStatusHeight: 1,
 	}
 	if len(m.roots) == 0 && m.workdir != "" {
 		m.roots = []string{m.workdir}
@@ -318,6 +322,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamCh = nil
 		m.streamIdx = -1
 		return m, nil
+	case tea.MouseMsg:
+		var vCmd tea.Cmd
+		m.viewport, vCmd = m.viewport.Update(msg)
+		return m, vCmd
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyEnter && msg.Alt {
 			break
@@ -374,6 +382,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 		}
+		if m.handleScrollKeys(msg) {
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -416,7 +427,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
 	tip := renderTip(m.width)
-	chatPane := renderPane("", m.viewport.View(), m.width, m.viewport.Height)
+	chatBody := m.viewport.View()
+	if status := m.renderScrollStatus(); status != "" {
+		chatBody = lipgloss.JoinVertical(lipgloss.Left, chatBody, status)
+	}
+	chatPane := renderPane("", chatBody, m.width, m.viewport.Height+m.chatStatusHeight)
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := statusLine(m.modelName, m.sandbox, m.workdir, m.pending, m.err, m.width, m.spin)
 	hints := renderHints(m.width)
@@ -731,7 +746,16 @@ func (m *Model) resize(width, height int) {
 		m.eventsPane.Width = eventsWidth
 		m.eventsPane.Height = contentHeight
 	}
-	m.viewport.Height = contentHeight
+	statusReserve := m.chatStatusHeight
+	if contentHeight <= statusReserve {
+		statusReserve = 0
+	}
+	viewHeight := contentHeight - statusReserve
+	if viewHeight < 1 {
+		viewHeight = 1
+	}
+	m.chatStatusHeight = statusReserve
+	m.viewport.Height = viewHeight
 	m.textarea.SetWidth(width)
 	m.eventsPane.SetContent(renderEvents(m.events, m.eventsPane.Width, m.eventsPane.Height))
 	m.refreshTranscript()
@@ -931,12 +955,93 @@ func renderTip(width int) string {
 }
 
 func renderHints(width int) string {
-	hint := "Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
+	hint := "↑/↓ 滚动 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 1).
 		Width(maxInt(20, width)).
 		Render(hint)
+}
+
+func (m *Model) handleScrollKeys(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyPgUp:
+		m.viewport.ViewUp()
+		return true
+	case tea.KeyPgDown:
+		m.viewport.ViewDown()
+		return true
+	case tea.KeyHome:
+		m.viewport.GotoTop()
+		return true
+	case tea.KeyEnd:
+		m.viewport.GotoBottom()
+		return true
+	case tea.KeyUp:
+		if m.shouldScrollViewport(tea.KeyUp, msg) {
+			m.viewport.LineUp(1)
+			return true
+		}
+	case tea.KeyDown:
+		if m.shouldScrollViewport(tea.KeyDown, msg) {
+			m.viewport.LineDown(1)
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) shouldScrollViewport(direction tea.KeyType, msg tea.KeyMsg) bool {
+	if msg.Alt {
+		return true
+	}
+
+	lineInfo := m.textarea.LineInfo()
+	if lineInfo.Height < 1 {
+		lineInfo.Height = 1
+	}
+
+	atTop := m.textarea.Line() == 0 && lineInfo.RowOffset == 0
+	lastLine := m.textarea.LineCount() - 1
+	if lastLine < 0 {
+		lastLine = 0
+	}
+	atBottomLine := m.textarea.Line() >= lastLine
+	atBottomRow := lineInfo.RowOffset >= lineInfo.Height-1
+
+	switch direction {
+	case tea.KeyUp:
+		return atTop
+	case tea.KeyDown:
+		return atBottomLine && atBottomRow
+	default:
+		return false
+	}
+}
+
+func (m *Model) renderScrollStatus() string {
+	if m.chatStatusHeight == 0 {
+		return ""
+	}
+	percent := int(math.Round(m.viewport.ScrollPercent() * 100))
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	width := m.viewport.Width - 12
+	if width < 10 {
+		width = 10
+	}
+	filled := int(math.Round(float64(width) * float64(percent) / 100.0))
+	if filled > width {
+		filled = width
+	}
+	bar := "[" + strings.Repeat("=", filled) + strings.Repeat(" ", width-filled) + "]"
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7D7A85")).
+		Render(fmt.Sprintf("%s %3d%%", bar, percent))
 }
 
 var modalStyle = lipgloss.NewStyle().

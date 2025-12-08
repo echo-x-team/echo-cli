@@ -319,7 +319,6 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(s
 			if chunk == "" {
 				return
 			}
-			llmLog.Infof("<- chunk model=%s seq=%d text=%s", model, chunkIdx, sanitizeLogText(chunk))
 			chunkIdx++
 		})
 		cancel()
