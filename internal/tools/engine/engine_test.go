@@ -31,7 +31,7 @@ type autoApprover struct {
 	allow bool
 }
 
-func (a autoApprover) Approve(req tools.ToolRequest) bool { return a.allow }
+func (a autoApprover) Approve(tools.ToolCall) bool { return a.allow }
 
 func TestOnFailureApprovalFlow(t *testing.T) {
 	runner := &stubRunner{fail: true}

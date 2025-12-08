@@ -1,5 +1,9 @@
 package tools
 
+import (
+	"encoding/json"
+)
+
 type ToolKind string
 
 const (
@@ -7,11 +11,24 @@ const (
 	ToolApplyPatch ToolKind = "file_change"
 	ToolFileRead   ToolKind = "file_read"
 	ToolSearch     ToolKind = "file_search"
+	ToolPlanUpdate ToolKind = "plan_update"
 )
 
+// ToolCall 表示一次工具调用的标准化结构。
+// Name 与 ID 对应模型输出的工具名与 call id，Payload 是原始 JSON 参数。
+type ToolCall struct {
+	ID      string
+	Name    string
+	Payload json.RawMessage
+}
+
+// ToolRequest 兼容旧接口，并用于将 UI / 测试输入转换为 ToolCall。
+// 新字段 Name/Payload 优先；旧字段 Command/Patch/Path/Query 会被封装为 Payload。
 type ToolRequest struct {
 	ID      string
+	Name    string
 	Kind    ToolKind
+	Payload json.RawMessage
 	Command string
 	Patch   string
 	Path    string
@@ -27,10 +44,18 @@ type ToolResult struct {
 	ExitCode int
 	Path     string
 	Command  string
+	Plan     []PlanItem
+	// Explanation 是 update_plan 的可选说明。
+	Explanation string
 }
 
 type ToolEvent struct {
 	Type   string // approval.requested|approval.completed|item.started|item.updated|item.completed
 	Result ToolResult
 	Reason string
+}
+
+// Approver 用于异步审批（UI/策略）。
+type Approver interface {
+	Approve(call ToolCall) bool
 }

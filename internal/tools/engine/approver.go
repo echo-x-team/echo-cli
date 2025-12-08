@@ -16,8 +16,8 @@ func NewUIApprover() *UIApprover {
 	return &UIApprover{pending: make(map[string]chan bool)}
 }
 
-func (a *UIApprover) Approve(req tools.ToolRequest) bool {
-	ch := a.get(req.ID)
+func (a *UIApprover) Approve(call tools.ToolCall) bool {
+	ch := a.get(call.ID)
 	return <-ch
 }
 

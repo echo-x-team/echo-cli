@@ -504,6 +504,11 @@ func (e *Engine) publishToolMarkers(chunk string) {
 func formatToolResults(results []tools.ToolResult) []agent.Message {
 	msgs := make([]agent.Message, 0, len(results))
 	for _, res := range results {
+		if res.Kind == tools.ToolPlanUpdate {
+			msgs = append(msgs, agent.Message{Role: agent.RoleUser, Content: formatPlanResult(res)})
+			continue
+		}
+
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("Tool %s (%s)", res.Kind, res.ID))
 		if res.Command != "" {
@@ -526,4 +531,33 @@ func formatToolResults(results []tools.ToolResult) []agent.Message {
 		msgs = append(msgs, agent.Message{Role: agent.RoleUser, Content: sb.String()})
 	}
 	return msgs
+}
+
+func formatPlanResult(res tools.ToolResult) string {
+	if res.Error != "" {
+		return fmt.Sprintf("Plan update failed: %s", res.Error)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Plan update")
+	if strings.TrimSpace(res.Explanation) != "" {
+		sb.WriteString("\nexplanation: " + strings.TrimSpace(res.Explanation))
+	}
+
+	if len(res.Plan) == 0 {
+		sb.WriteString("\nplan: (empty)")
+		return sb.String()
+	}
+
+	for _, item := range res.Plan {
+		icon := "•"
+		switch item.Status {
+		case "completed":
+			icon = "✓"
+		case "in_progress":
+			icon = "→"
+		}
+		sb.WriteString(fmt.Sprintf("\n- [%s] %s", icon, item.Step))
+	}
+	return sb.String()
 }

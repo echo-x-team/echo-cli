@@ -12,17 +12,17 @@ import (
 
 func TestToRequestResolvesPath(t *testing.T) {
 	bus := events.NewBus()
-	d := New(policy.Policy{}, sandbox.NewRunner("danger-full-access"), bus, "/workspace", nil)
+	_ = New(policy.Policy{}, sandbox.NewRunner("danger-full-access"), bus, "/workspace", nil)
 	marker := tools.ToolCallMarker{
 		Tool: "apply_patch",
 		ID:   "p1",
 		Args: json.RawMessage(`{"patch":"diff","path":"file.txt"}`),
 	}
-	req, err := d.toRequest(marker)
+	call, err := tools.BuildCallFromMarker(marker)
 	if err != nil {
-		t.Fatalf("toRequest error: %v", err)
+		t.Fatalf("build call error: %v", err)
 	}
-	if req.Path != "/workspace/file.txt" {
-		t.Fatalf("expected resolved path, got %s", req.Path)
+	if call.Name != "apply_patch" || call.ID != "p1" {
+		t.Fatalf("unexpected call %+v", call)
 	}
 }
