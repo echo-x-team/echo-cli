@@ -1,8 +1,8 @@
 package main
 
 import (
-	"flag"
 	"fmt"
+	"strings"
 
 	"echo-cli/internal/features"
 )
@@ -12,15 +12,41 @@ type rootArgs struct {
 }
 
 func parseRootArgs(args []string) (rootArgs, []string, error) {
-	fs := flag.NewFlagSet("echo-cli", flag.ContinueOnError)
 	var overrides stringSlice
 	var enable stringSlice
 	var disable stringSlice
-	fs.Var(&overrides, "c", "Override config value key=value (repeatable, applied before subcommand overrides)")
-	fs.Var(&enable, "enable", "Enable a feature (repeatable). Equivalent to -c features.<name>=true")
-	fs.Var(&disable, "disable", "Disable a feature (repeatable). Equivalent to -c features.<name>=false")
-	if err := fs.Parse(args); err != nil {
-		return rootArgs{}, nil, err
+	rest := []string{}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-c":
+			if i+1 >= len(args) {
+				return rootArgs{}, nil, fmt.Errorf("flag needs an argument: -c")
+			}
+			overrides = append(overrides, args[i+1])
+			i++
+		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--c="):
+			overrides = append(overrides, trimFlagValue(arg, "-c=", "--c="))
+		case arg == "-enable" || arg == "--enable":
+			if i+1 >= len(args) {
+				return rootArgs{}, nil, fmt.Errorf("flag needs an argument: %s", arg)
+			}
+			enable = append(enable, args[i+1])
+			i++
+		case strings.HasPrefix(arg, "-enable=") || strings.HasPrefix(arg, "--enable="):
+			enable = append(enable, trimFlagValue(arg, "-enable=", "--enable="))
+		case arg == "-disable" || arg == "--disable":
+			if i+1 >= len(args) {
+				return rootArgs{}, nil, fmt.Errorf("flag needs an argument: %s", arg)
+			}
+			disable = append(disable, args[i+1])
+			i++
+		case strings.HasPrefix(arg, "-disable=") || strings.HasPrefix(arg, "--disable="):
+			disable = append(disable, trimFlagValue(arg, "-disable=", "--disable="))
+		default:
+			rest = append(rest, arg)
+		}
 	}
 
 	featureOverrides, err := buildFeatureOverrides(enable, disable)
@@ -29,7 +55,7 @@ func parseRootArgs(args []string) (rootArgs, []string, error) {
 	}
 	all := append([]string{}, overrides...)
 	all = append(all, featureOverrides...)
-	return rootArgs{overrides: all}, fs.Args(), nil
+	return rootArgs{overrides: all}, rest, nil
 }
 
 func prependOverrides(root []string, overrides []string) []string {
@@ -52,4 +78,13 @@ func buildFeatureOverrides(enable []string, disable []string) ([]string, error) 
 		overrides = append(overrides, fmt.Sprintf("features.%s=%t", key, false))
 	}
 	return overrides, nil
+}
+
+func trimFlagValue(arg string, prefixes ...string) string {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(arg, prefix) {
+			return strings.TrimPrefix(arg, prefix)
+		}
+	}
+	return arg
 }

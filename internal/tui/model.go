@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
@@ -29,8 +28,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 )
-
-const frameDuration = time.Second / 60
 
 type Options struct {
 	Engine          *execution.Engine
@@ -92,11 +89,9 @@ type systemMsg struct {
 	Text string
 }
 
-type flushTranscriptMsg struct{}
-
 type Model struct {
 	textarea        textarea.Model
-	viewport        viewport.Model
+	viewport        render.HighPerformanceViewport
 	eventsPane      viewport.Model
 	search          list.Model
 	sessions        list.Model
@@ -134,7 +129,6 @@ type Model struct {
 	eventsWidth     int
 	spin            spinner.Model
 	showHelp        bool
-	transcript      string
 	transcriptDirty bool
 	// chatStatusHeight 为滚动状态栏预留高度。
 	chatStatusHeight int
@@ -166,7 +160,7 @@ func New(opts Options) Model {
 	ti.ShowLineNumbers = false
 	ti.Focus()
 
-	vp := viewport.New(90, 12)
+	vp := render.NewHighPerformanceViewport(90, 12)
 	vp.SetContent("Welcome to Echo (Go). Type a message to start.\n")
 	evp := viewport.New(30, 12)
 	evp.SetContent("Events")
@@ -247,11 +241,10 @@ func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, m.listenQueues()...)
 	cmds = append(cmds, m.spin.Tick)
-	cmds = append(cmds, m.frameTick())
+	if cmd := m.flushTranscript(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	if strings.TrimSpace(m.initSend) == "" {
-		if len(cmds) == 0 {
-			return nil
-		}
 		return tea.Batch(cmds...)
 	}
 	prompt := strings.TrimSpace(m.initSend)
@@ -262,15 +255,17 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.resize(msg.Width, msg.Height)
-		return m, nil
+		cmds = append(cmds, m.resize(msg.Width, msg.Height)...)
+		return m.finish(cmds...)
 	case searchResultsMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			m.searching = false
-			return m, nil
+			return m.finish(cmds...)
 		}
 		items := make([]list.Item, 0, len(msg.Paths))
 		for _, p := range msg.Paths {
@@ -278,55 +273,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.search.SetItems(items)
 		m.searching = true
-		return m, nil
+		return m.finish(cmds...)
 	case startPromptMsg:
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: msg.Text})
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
 		m.streamIdx = len(m.messages) - 1
 		m.refreshTranscript()
 		m.pending = true
-		return m, m.startStream(msg.Text)
+		cmds = append(cmds, m.startStream(msg.Text))
+		return m.finish(cmds...)
 	case assistantReplyMsg:
 		m.finishStream(msg.Text)
-		return m, nil
+		return m.finish(cmds...)
 	case assistantChunkMsg:
 		m.appendChunk(msg.Text)
-		return m, m.listenStream()
+		cmds = append(cmds, m.listenStream())
+		return m.finish(cmds...)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
-		return m, cmd
-	case flushTranscriptMsg:
-		m.flushTranscript()
-		return m, m.frameTick()
+		cmds = append(cmds, cmd)
+		return m.finish(cmds...)
 	case busEventMsg:
 		cmd := m.handleBusEvent(msg.Event)
-		nextBatch := m.listenQueues()
-		if cmd == nil {
-			return m, tea.Batch(nextBatch...)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-		return m, tea.Batch(append(nextBatch, cmd)...)
+		cmds = append(cmds, m.listenQueues()...)
+		return m.finish(cmds...)
 	case engineEventMsg:
 		cmd := m.handleEngineEvent(msg.Event)
-		nextBatch := m.listenQueues()
-		if cmd == nil {
-			return m, tea.Batch(nextBatch...)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-		return m, tea.Batch(append(nextBatch, cmd)...)
+		cmds = append(cmds, m.listenQueues()...)
+		return m.finish(cmds...)
 	case systemMsg:
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: msg.Text})
 		m.refreshTranscript()
-		return m, nil
+		return m.finish(cmds...)
 	case agentErrorMsg:
 		m.pending = false
 		m.err = msg.Err
 		m.streamCh = nil
 		m.streamIdx = -1
-		return m, nil
+		return m.finish(cmds...)
 	case tea.MouseMsg:
-		var vCmd tea.Cmd
-		m.viewport, vCmd = m.viewport.Update(msg)
-		return m, vCmd
+		if vCmd := m.viewport.HandleUpdate(msg); vCmd != nil {
+			cmds = append(cmds, vCmd)
+		}
+		return m.finish(cmds...)
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyEnter && msg.Alt {
 			break
@@ -334,40 +330,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pickingSession {
 			var cmd tea.Cmd
 			m.sessions, cmd = m.sessions.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			switch msg.String() {
 			case "enter":
 				if sel, ok := m.sessions.SelectedItem().(listItem); ok {
 					rec, err := session.Load(string(sel))
 					if err != nil {
 						m.pickingSession = false
-						return m, func() tea.Msg { return systemMsg{Text: fmt.Sprintf("session load error: %v", err)} }
+						cmds = append(cmds, func() tea.Msg { return systemMsg{Text: fmt.Sprintf("session load error: %v", err)} })
+						return m.finish(cmds...)
 					}
 					m.messages = append([]agent.Message{}, rec.Messages...)
 					m.resumeSessionID = rec.ID
 					m.pickingSession = false
 					m.refreshTranscript()
-					return m, nil
+					return m.finish(cmds...)
 				}
 			case "esc", "ctrl+c":
 				m.pickingSession = false
-				return m, nil
+				return m.finish(cmds...)
 			}
-			return m, cmd
+			return m.finish(cmds...)
 		}
 		if m.pendingApprove != "" {
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.resolveApproval(true)
-				return m, nil
+				return m.finish(cmds...)
 			case "n", "N", "esc", "ctrl+c":
 				m.resolveApproval(false)
-				return m, nil
+				return m.finish(cmds...)
 			}
-			return m, nil
+			return m.finish(cmds...)
 		}
 		if m.searching {
 			var cmd tea.Cmd
 			m.search, cmd = m.search.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			switch msg.String() {
 			case "enter":
 				if sel, ok := m.search.SelectedItem().(listItem); ok {
@@ -375,38 +378,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.searching = false
 				m.mentionAt = -1
-				return m, nil
+				return m.finish(cmds...)
 			case "esc", "ctrl+c":
 				m.searching = false
 				m.mentionAt = -1
-				return m, nil
+				return m.finish(cmds...)
 			}
-			return m, cmd
+			return m.finish(cmds...)
 		}
-		if m.handleScrollKeys(msg) {
-			return m, nil
+		if cmd, handled := m.handleScrollKeys(msg); handled {
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m.finish(cmds...)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
-			return m, tea.Quit
+			cmds = append(cmds, tea.Quit)
+			return m.finish(cmds...)
 		case "?":
 			m.showHelp = !m.showHelp
-			return m, nil
+			return m.finish(cmds...)
 		case "@":
 			m.mentionAt = len(m.textarea.Value())
-			return m, m.loadSearch()
+			cmds = append(cmds, m.loadSearch())
+			return m.finish(cmds...)
 		case "enter":
 			if m.pending {
-				return m, nil
+				return m.finish(cmds...)
 			}
 			input := strings.TrimSpace(m.textarea.Value())
 			if input == "" {
-				return m, nil
+				return m.finish(cmds...)
 			}
 			if strings.HasPrefix(input, "/") {
 				cmd := m.handleSlash(input)
 				m.textarea.Reset()
-				return m, cmd
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m.finish(cmds...)
 			}
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: input})
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
@@ -415,14 +426,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.setComposerHeight()
 			m.pending = true
-			return m, m.startStream(input)
+			cmds = append(cmds, m.startStream(input))
+			return m.finish(cmds...)
 		}
 	}
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	m.setComposerHeight()
-	return m, cmd
+	cmds = append(cmds, cmd)
+	return m.finish(cmds...)
+}
+
+func (m Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.transcriptDirty {
+		if cmd := m.flushTranscript(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) View() string {
@@ -560,12 +582,6 @@ func (m Model) listenQueues() []tea.Cmd {
 		cmds = append(cmds, cmd)
 	}
 	return cmds
-}
-
-func (m Model) frameTick() tea.Cmd {
-	return tea.Tick(frameDuration, func(time.Time) tea.Msg {
-		return flushTranscriptMsg{}
-	})
 }
 
 func (m *Model) handleBusEvent(evt any) tea.Cmd {
@@ -720,7 +736,8 @@ func (m *Model) appendChunk(chunk string) {
 	m.refreshTranscript()
 }
 
-func (m *Model) resize(width, height int) {
+func (m *Model) resize(width, height int) []tea.Cmd {
+	cmds := []tea.Cmd{}
 	m.width = width
 	m.height = height
 	composerHeight := m.textarea.Height() + 3 // title + border
@@ -756,10 +773,14 @@ func (m *Model) resize(width, height int) {
 		viewHeight = 1
 	}
 	m.chatStatusHeight = statusReserve
-	m.viewport.Height = viewHeight
+	if cmd := m.viewport.Resize(chatWidth, viewHeight); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	m.textarea.SetWidth(width)
 	m.eventsPane.SetContent(renderEvents(m.events, m.eventsPane.Width, m.eventsPane.Height))
+	m.viewport.SetYPosition(m.viewportTop())
 	m.refreshTranscript()
+	return cmds
 }
 
 func (m *Model) setComposerHeight() {
@@ -782,34 +803,26 @@ func (m *Model) refreshTranscript() {
 	m.transcriptDirty = true
 }
 
-func (m *Model) flushTranscript() {
+func (m *Model) flushTranscript() tea.Cmd {
 	if !m.transcriptDirty {
-		return
+		return nil
 	}
-	content := m.renderTranscript()
-	if content == m.transcript {
-		m.transcriptDirty = false
-		return
-	}
-	atBottom := m.viewport.AtBottom()
-	m.transcript = content
-	m.viewport.SetContent(content)
-	if atBottom {
-		m.viewport.GotoBottom()
-	}
+	lines := m.renderTranscriptLines()
 	m.transcriptDirty = false
+	m.viewport.SetYPosition(m.viewportTop())
+	return m.viewport.SetLines(lines)
 }
 
-func (m *Model) renderTranscript() string {
+func (m *Model) renderTranscriptLines() []string {
 	width := m.viewport.Width
 	if width <= 0 {
 		width = 80
 	}
 	lines := render.RenderMessages(m.messages, width)
 	if len(lines) == 0 {
-		return "Welcome to Echo (Go). Type a message to start."
+		return []string{"Welcome to Echo (Go). Type a message to start."}
 	}
-	return strings.Join(render.LinesToStrings(lines), "\n")
+	return render.LinesToStrings(lines)
 }
 
 func statusLine(model, sandbox, workdir string, pending bool, err error, width int, spin spinner.Model) string {
@@ -913,32 +926,36 @@ func renderHints(width int) string {
 		Render(hint)
 }
 
-func (m *Model) handleScrollKeys(msg tea.KeyMsg) bool {
+func (m *Model) viewportTop() int {
+	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
+	tip := renderTip(m.width)
+	top := lipgloss.Height(banner) + lipgloss.Height(tip) + 1 // border 顶部占一行
+	if top < 0 {
+		return 0
+	}
+	return top
+}
+
+func (m *Model) handleScrollKeys(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.Type {
 	case tea.KeyPgUp:
-		m.viewport.ViewUp()
-		return true
+		return m.viewport.ScrollPageUp(), true
 	case tea.KeyPgDown:
-		m.viewport.ViewDown()
-		return true
+		return m.viewport.ScrollPageDown(), true
 	case tea.KeyHome:
-		m.viewport.GotoTop()
-		return true
+		return m.viewport.GotoTopCmd(), true
 	case tea.KeyEnd:
-		m.viewport.GotoBottom()
-		return true
+		return m.viewport.GotoBottomCmd(), true
 	case tea.KeyUp:
 		if m.shouldScrollViewport(tea.KeyUp, msg) {
-			m.viewport.LineUp(1)
-			return true
+			return m.viewport.ScrollLineUp(1), true
 		}
 	case tea.KeyDown:
 		if m.shouldScrollViewport(tea.KeyDown, msg) {
-			m.viewport.LineDown(1)
-			return true
+			return m.viewport.ScrollLineDown(1), true
 		}
 	}
-	return false
+	return nil, false
 }
 
 func (m *Model) shouldScrollViewport(direction tea.KeyType, msg tea.KeyMsg) bool {
