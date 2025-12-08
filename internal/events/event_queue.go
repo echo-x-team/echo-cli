@@ -121,8 +121,8 @@ func (q *EventQueue) logPublish(event Event, dropped bool) {
 	if event.SessionID != "" {
 		fields["session_id"] = event.SessionID
 	}
-	if event.Payload != nil {
-		fields["payload"] = event.Payload
+	if payload := encodePayload(event.Payload); payload != "" {
+		fields["payload"] = payload
 	}
 	if len(event.Metadata) > 0 {
 		fields["metadata"] = event.Metadata

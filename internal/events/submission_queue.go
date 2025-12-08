@@ -97,7 +97,9 @@ func (q *SubmissionQueue) logSubmission(submission Submission) {
 		"submission_id": submission.ID,
 		"operation":     submission.Operation.Kind,
 		"priority":      submission.Priority,
-		"payload":       submission.Operation,
+	}
+	if payload := encodePayload(submission.Operation); payload != "" {
+		fields["payload"] = payload
 	}
 	if submission.SessionID != "" {
 		fields["session_id"] = submission.SessionID

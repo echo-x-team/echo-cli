@@ -1,6 +1,8 @@
 package events
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 
 	"echo-cli/internal/logger"
@@ -25,4 +27,15 @@ func newQueueLogger(component, path string) (*logger.LogEntry, io.Closer) {
 		return logger.Named(component), nil
 	}
 	return entry, closer
+}
+
+func encodePayload(payload any) string {
+	if payload == nil {
+		return ""
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("<marshal error: %v>", err)
+	}
+	return string(b)
 }
