@@ -33,7 +33,6 @@ func main() {
 	} else {
 		defer logFile.Close()
 	}
-	logger.SetGlobalLLMLogger(logger.NewLLMLogger(logger.Root()))
 
 	root, rest, err := parseRootArgs(os.Args[1:])
 	if err != nil {

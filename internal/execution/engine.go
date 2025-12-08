@@ -11,7 +11,6 @@ import (
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
-	"echo-cli/internal/logger"
 	"echo-cli/internal/tools"
 )
 
@@ -308,7 +307,10 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(s
 	}
 	var lastErr error
 	for attempt := 0; attempt <= e.retries; attempt++ {
-		logger.Request(model, agent.ToLLMMessages(messages), attempt+1)
+		llmLog.Infof("-> request attempt=%d model=%s messages=%d", attempt+1, model, len(messages))
+		for i, msg := range messages {
+			llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
 		chunkIdx := 0
 		err := e.client.Stream(ctxRun, messages, model, func(chunk string) {
@@ -317,15 +319,15 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(s
 			if chunk == "" {
 				return
 			}
-			logger.StreamChunk(model, chunk, chunkIdx)
+			llmLog.Infof("<- chunk model=%s seq=%d text=%s", model, chunkIdx, sanitizeLogText(chunk))
 			chunkIdx++
 		})
 		cancel()
 		if err == nil {
-			logger.StreamComplete(model, attempt+1)
+			llmLog.Infof("<- stream completed attempt=%d model=%s", attempt+1, model)
 			return nil
 		}
-		logger.Error(model, err, attempt+1)
+		llmLog.Errorf("!! error attempt=%d model=%s err=%v", attempt+1, model, err)
 		lastErr = err
 	}
 	return lastErr

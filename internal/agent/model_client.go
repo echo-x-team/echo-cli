@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-
-	"echo-cli/internal/logger"
 )
 
 // ModelClient 定义模型客户端接口
@@ -33,16 +31,4 @@ func (c EchoClient) Stream(ctx context.Context, messages []Message, model string
 	}
 	onChunk(text)
 	return nil
-}
-
-// ToLLMMessages 将内部消息转换为日志友好的结构。
-func ToLLMMessages(msgs []Message) []logger.LLMMessage {
-	out := make([]logger.LLMMessage, 0, len(msgs))
-	for _, msg := range msgs {
-		out = append(out, logger.LLMMessage{
-			Role:    string(msg.Role),
-			Content: msg.Content,
-		})
-	}
-	return out
 }
