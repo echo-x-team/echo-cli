@@ -19,6 +19,7 @@ import (
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
 	toolengine "echo-cli/internal/tools/engine"
+	"echo-cli/internal/tui/render"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -800,66 +801,15 @@ func (m *Model) flushTranscript() {
 }
 
 func (m *Model) renderTranscript() string {
-	builder := strings.Builder{}
 	width := m.viewport.Width
 	if width <= 0 {
 		width = 80
 	}
-	for _, msg := range m.messages {
-		builder.WriteString(renderMessage(msg, width))
-		builder.WriteString("\n")
-	}
-	if builder.Len() == 0 {
-		builder.WriteString("Welcome to Echo (Go). Type a message to start.")
-	}
-	return builder.String()
-}
-
-func renderMessage(msg agent.Message, width int) string {
-	_ = width
-	switch msg.Role {
-	case agent.RoleUser:
-		return renderUserMessage(msg.Content)
-	case agent.RoleAssistant:
-		return renderAgentMessage(msg.Content)
-	default:
-		return msg.Content
-	}
-}
-
-func renderUserMessage(content string) string {
-	prefix := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D7A85")).Bold(true).Render("› ")
-	indent := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D7A85")).Render("  ")
-	lines := []string{""}
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimRight(line, " ")
-		if strings.TrimSpace(trimmed) == "" {
-			lines = append(lines, indent)
-			continue
-		}
-		lines = append(lines, prefix+trimmed)
-	}
-	lines = append(lines, "")
-	return strings.Join(lines, "\n")
-}
-
-func renderAgentMessage(content string) string {
-	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Render("• ")
-	indent := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Render("  ")
-	lines := []string{}
-	first := true
-	for _, line := range strings.Split(content, "\n") {
-		if first {
-			lines = append(lines, bullet+line)
-			first = false
-			continue
-		}
-		lines = append(lines, indent+line)
-	}
+	lines := render.RenderMessages(m.messages, width)
 	if len(lines) == 0 {
-		lines = append(lines, bullet)
+		return "Welcome to Echo (Go). Type a message to start."
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(render.LinesToStrings(lines), "\n")
 }
 
 func statusLine(model, sandbox, workdir string, pending bool, err error, width int, spin spinner.Model) string {

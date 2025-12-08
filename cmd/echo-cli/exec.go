@@ -283,6 +283,14 @@ func execMain(root rootArgs, args []string) {
 	engine.Start(ctx)
 	defer engine.Close()
 	gateway := repl.NewGateway(manager)
+	var eqRenderer *repl.EQRenderer
+	if !jsonOutput {
+		eqRenderer = repl.NewEQRenderer(repl.EQRendererOptions{
+			SessionID: sessionID,
+			Width:     80,
+			Writer:    os.Stderr,
+		})
+	}
 
 	// 提取纯对话历史（不包含系统注入的内容）
 	history := []agent.Message{}
@@ -373,6 +381,9 @@ func execMain(root rootArgs, args []string) {
 		case ev := <-engineEvents:
 			if ev.SubmissionID != subID {
 				continue
+			}
+			if eqRenderer != nil {
+				eqRenderer.Handle(ev)
 			}
 			switch ev.Type {
 			case events.EventTaskStarted:

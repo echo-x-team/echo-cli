@@ -34,3 +34,4 @@
 - 默认尊重沙箱（read-only/workspace-write），勿随意放宽。
 - 新增工具务必发出 `approval.requested/approval.completed/item.*` 事件，并贯通 TUI/exec。
 - 本文件若流程变更需同步更新。
+- 事件队列约定：数据提交一律进入 SQ，执行引擎生成结果一律通过 EQ 发布；REPL 监听 EQ 变化并调用 `internal/tui` 渲染模块做增量渲染。
