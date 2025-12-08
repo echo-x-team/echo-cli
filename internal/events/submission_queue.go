@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"echo-cli/internal/logger"
 )
 
 var (
@@ -15,6 +17,7 @@ var (
 type SubmissionQueue struct {
 	ch        chan Submission
 	closeOnce sync.Once
+	log       *logger.LogEntry
 }
 
 // NewSubmissionQueue 创建一个新的 SubmissionQueue。
@@ -22,7 +25,18 @@ func NewSubmissionQueue(capacity int) *SubmissionQueue {
 	if capacity <= 0 {
 		capacity = 64
 	}
-	return &SubmissionQueue{ch: make(chan Submission, capacity)}
+	return &SubmissionQueue{
+		ch:  make(chan Submission, capacity),
+		log: logger.Named("sq"),
+	}
+}
+
+// SetLogger 覆盖队列使用的 logger。
+func (q *SubmissionQueue) SetLogger(entry *logger.LogEntry) {
+	if entry == nil {
+		return
+	}
+	q.log = entry
 }
 
 // Submit 将提交放入队列；支持 ctx 取消。
@@ -36,6 +50,7 @@ func (q *SubmissionQueue) Submit(ctx context.Context, submission Submission) err
 	case <-ctx.Done():
 		return ctx.Err()
 	case q.ch <- submission:
+		q.logSubmission(submission)
 		return nil
 	default:
 		// 等待一个可写位或取消
@@ -43,6 +58,7 @@ func (q *SubmissionQueue) Submit(ctx context.Context, submission Submission) err
 		case <-ctx.Done():
 			return ctx.Err()
 		case q.ch <- submission:
+			q.logSubmission(submission)
 			return nil
 		}
 	}
@@ -71,4 +87,23 @@ func (q *SubmissionQueue) Close() {
 	q.closeOnce.Do(func() {
 		close(q.ch)
 	})
+}
+
+func (q *SubmissionQueue) logSubmission(submission Submission) {
+	if q.log == nil {
+		return
+	}
+	fields := logger.Fields{
+		"submission_id": submission.ID,
+		"operation":     submission.Operation.Kind,
+		"priority":      submission.Priority,
+		"payload":       submission.Operation,
+	}
+	if submission.SessionID != "" {
+		fields["session_id"] = submission.SessionID
+	}
+	if len(submission.Metadata) > 0 {
+		fields["metadata"] = submission.Metadata
+	}
+	q.log.WithFields(fields).Info("enqueued submission into SQ")
 }

@@ -34,15 +34,31 @@ func SetupFile(logPath string) (io.Closer, string, error) {
 	if logPath == "" {
 		logPath = DefaultLogPath
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return nil, "", err
-	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, resolved, err := openLogFile(logPath)
 	if err != nil {
 		return nil, "", err
 	}
 	root().SetOutput(f)
-	return f, logPath, nil
+	return f, resolved, nil
+}
+
+// SetupComponentFile 创建独立的 logger，输出到指定文件并附加 component 字段。
+// 返回 entry、文件 closer 及实际路径。
+func SetupComponentFile(component, logPath string) (*LogEntry, io.Closer, string, error) {
+	f, resolved, err := openLogFile(logPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	l := logrus.New()
+	l.SetReportCaller(true)
+	l.SetFormatter(PlainFormatter{})
+	l.SetOutput(f)
+
+	entry := logrus.NewEntry(l)
+	if component != "" {
+		entry = entry.WithField("component", component)
+	}
+	return entry, f, resolved, nil
 }
 
 // Root 返回全局共享的 logger。
@@ -179,4 +195,18 @@ func shortenFilePath(file string) string {
 		return file[idx+len("/echo-cli/"):]
 	}
 	return filepath.Base(file)
+}
+
+func openLogFile(logPath string) (*os.File, string, error) {
+	if logPath == "" {
+		logPath = DefaultLogPath
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return nil, "", err
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, "", err
+	}
+	return f, logPath, nil
 }

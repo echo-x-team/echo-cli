@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
+	"echo-cli/internal/logger"
 	"github.com/google/uuid"
 )
 
@@ -32,6 +34,8 @@ type ManagerConfig struct {
 	SubmissionBuffer int
 	EventBuffer      int
 	Workers          int
+	SQLogPath        string
+	EQLogPath        string
 }
 
 func (cfg ManagerConfig) withDefaults() ManagerConfig {
@@ -43,6 +47,12 @@ func (cfg ManagerConfig) withDefaults() ManagerConfig {
 	}
 	if cfg.Workers == 0 {
 		cfg.Workers = 1
+	}
+	if cfg.SQLogPath == "" {
+		cfg.SQLogPath = DefaultSQLogPath
+	}
+	if cfg.EQLogPath == "" {
+		cfg.EQLogPath = DefaultEQLogPath
 	}
 	return cfg
 }
@@ -59,16 +69,34 @@ type Manager struct {
 	stopOnce  sync.Once
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+
+	sqLog       *logger.LogEntry
+	eqLog       *logger.LogEntry
+	sqLogCloser io.Closer
+	eqLogCloser io.Closer
 }
 
 // NewManager 创建新的事件管理器。
 func NewManager(cfg ManagerConfig) *Manager {
 	cfg = cfg.withDefaults()
+
+	sqLog, sqCloser := newQueueLogger("sq", cfg.SQLogPath)
+	eqLog, eqCloser := newQueueLogger("eq", cfg.EQLogPath)
+
+	queue := NewSubmissionQueue(cfg.SubmissionBuffer)
+	queue.SetLogger(sqLog)
+	events := NewEventQueue(cfg.EventBuffer)
+	events.SetLogger(eqLog)
+
 	return &Manager{
-		queue:    NewSubmissionQueue(cfg.SubmissionBuffer),
-		events:   NewEventQueue(cfg.EventBuffer),
-		handlers: map[OperationKind]Handler{},
-		workers:  cfg.Workers,
+		queue:       queue,
+		events:      events,
+		handlers:    map[OperationKind]Handler{},
+		workers:     cfg.Workers,
+		sqLog:       sqLog,
+		eqLog:       eqLog,
+		sqLogCloser: sqCloser,
+		eqLogCloser: eqCloser,
 	}
 }
 
@@ -103,6 +131,12 @@ func (m *Manager) Close() {
 		m.queue.Close()
 		m.wg.Wait()
 		m.events.Close()
+		if m.sqLogCloser != nil {
+			_ = m.sqLogCloser.Close()
+		}
+		if m.eqLogCloser != nil {
+			_ = m.eqLogCloser.Close()
+		}
 	})
 }
 

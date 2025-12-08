@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"echo-cli/internal/logger"
 )
 
 var (
@@ -19,6 +21,7 @@ type EventQueue struct {
 	subs   []chan Event
 	buffer int
 	closed bool
+	log    *logger.LogEntry
 }
 
 // NewEventQueue 创建事件队列，buffer 是每个订阅者的缓存大小。
@@ -26,7 +29,10 @@ func NewEventQueue(buffer int) *EventQueue {
 	if buffer <= 0 {
 		buffer = 64
 	}
-	return &EventQueue{buffer: buffer}
+	return &EventQueue{
+		buffer: buffer,
+		log:    logger.Named("eq"),
+	}
 }
 
 // Subscribe 订阅事件流。通道会在 Close 时关闭。
@@ -41,6 +47,14 @@ func (q *EventQueue) Subscribe() <-chan Event {
 	ch := make(chan Event, q.buffer)
 	q.subs = append(q.subs, ch)
 	return ch
+}
+
+// SetLogger 覆盖队列使用的 logger。
+func (q *EventQueue) SetLogger(entry *logger.LogEntry) {
+	if entry == nil {
+		return
+	}
+	q.log = entry
 }
 
 // Publish 发布事件到所有订阅者。若存在丢弃，则返回 ErrEventDropped。
@@ -63,6 +77,7 @@ func (q *EventQueue) Publish(ctx context.Context, event Event) error {
 			dropped = true
 		}
 	}
+	q.logPublish(event, dropped)
 	if dropped {
 		return ErrEventDropped
 	}
@@ -91,4 +106,29 @@ func (q *EventQueue) SubscriberCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.subs)
+}
+
+func (q *EventQueue) logPublish(event Event, dropped bool) {
+	if q.log == nil {
+		return
+	}
+	fields := logger.Fields{
+		"type": event.Type,
+	}
+	if event.SubmissionID != "" {
+		fields["submission_id"] = event.SubmissionID
+	}
+	if event.SessionID != "" {
+		fields["session_id"] = event.SessionID
+	}
+	if event.Payload != nil {
+		fields["payload"] = event.Payload
+	}
+	if len(event.Metadata) > 0 {
+		fields["metadata"] = event.Metadata
+	}
+	if dropped {
+		fields["dropped"] = true
+	}
+	q.log.WithFields(fields).Info("published event into EQ")
 }
