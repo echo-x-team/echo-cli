@@ -25,7 +25,7 @@ func Run(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	tuiModel, ok := m.(Model)
+	tuiModel, ok := m.(*Model)
 	if !ok {
 		return Result{}, errors.New("unexpected tui model")
 	}

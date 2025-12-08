@@ -7,3 +7,9 @@
 - [x] 为渲染层引入高性能视口组件，减少重绘范围并整合到现有布局/渲染流程。
 - [x] 为视口组件补充表驱动测试，覆盖滚动、差分与多宽字符场景。
 - [x] 运行 `go test ./...` 确认变更无回归。
+- [x] 升级 Bubble Tea 至 v1.3.10（同步依赖版本、`go mod tidy`）。
+- [x] 按 v1.3.10 最新写法重构 `internal/tui`（Program 初始化、视口/输入适配）。
+- [x] 运行 `gofmt -w ./...` 与 `go test ./...` 验证。
+- [x] 停用高性能渲染路径，改用 Bubble Tea 默认渲染器并整理视口封装。
+- [x] 重命名 `internal/tui/render/high_performance_viewport.go` 为 `viewport.go` 并同步相关引用/测试文件。
+- [x] 运行 `gofmt -w ./...` 与 `go test ./...` 验证。

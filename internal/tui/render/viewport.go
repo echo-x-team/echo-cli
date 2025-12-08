@@ -14,10 +14,10 @@ type HighPerformanceViewport struct {
 	lastLines []string
 }
 
-// NewHighPerformanceViewport 创建开启高性能渲染的视口。
+// NewHighPerformanceViewport 创建视口；Bubble Tea v1 推荐默认渲染器，因此不启用
+// 兼容的高性能命令路径。
 func NewHighPerformanceViewport(width, height int) HighPerformanceViewport {
 	vp := viewport.New(width, height)
-	vp.HighPerformanceRendering = true
 	return HighPerformanceViewport{Model: vp}
 }
 
@@ -36,7 +36,7 @@ func (v *HighPerformanceViewport) Resize(width, height int) tea.Cmd {
 	if widthChanged {
 		v.Invalidate()
 	}
-	return v.sync()
+	return nil
 }
 
 // SetYPosition 更新视口在终端中的起始行。
@@ -66,7 +66,6 @@ func (v *HighPerformanceViewport) SetLines(lines []string) tea.Cmd {
 		return nil
 	}
 
-	prev := v.lastLines
 	stickToBottom := v.AtBottom()
 	v.lastLines = append([]string(nil), lines...)
 
@@ -74,11 +73,7 @@ func (v *HighPerformanceViewport) SetLines(lines []string) tea.Cmd {
 	if stickToBottom {
 		v.GotoBottom()
 	}
-
-	if appended := appendedLines(prev, lines); stickToBottom && len(appended) > 0 {
-		return v.scrollDown(appended)
-	}
-	return v.sync()
+	return nil
 }
 
 // ScrollPageDown 下翻一页。
@@ -86,10 +81,7 @@ func (v *HighPerformanceViewport) ScrollPageDown() tea.Cmd {
 	if v == nil {
 		return nil
 	}
-	lines := v.ViewDown()
-	if v.HighPerformanceRendering {
-		return viewport.ViewDown(v.Model, lines)
-	}
+	v.PageDown()
 	return nil
 }
 
@@ -98,10 +90,7 @@ func (v *HighPerformanceViewport) ScrollPageUp() tea.Cmd {
 	if v == nil {
 		return nil
 	}
-	lines := v.ViewUp()
-	if v.HighPerformanceRendering {
-		return viewport.ViewUp(v.Model, lines)
-	}
+	v.PageUp()
 	return nil
 }
 
@@ -110,10 +99,7 @@ func (v *HighPerformanceViewport) ScrollLineDown(n int) tea.Cmd {
 	if v == nil {
 		return nil
 	}
-	lines := v.LineDown(n)
-	if v.HighPerformanceRendering {
-		return viewport.ViewDown(v.Model, lines)
-	}
+	v.ScrollDown(n)
 	return nil
 }
 
@@ -122,10 +108,7 @@ func (v *HighPerformanceViewport) ScrollLineUp(n int) tea.Cmd {
 	if v == nil {
 		return nil
 	}
-	lines := v.LineUp(n)
-	if v.HighPerformanceRendering {
-		return viewport.ViewUp(v.Model, lines)
-	}
+	v.ScrollUp(n)
 	return nil
 }
 
@@ -135,7 +118,7 @@ func (v *HighPerformanceViewport) GotoTopCmd() tea.Cmd {
 		return nil
 	}
 	v.GotoTop()
-	return v.sync()
+	return nil
 }
 
 // GotoBottomCmd 跳转底部并返回同步命令。
@@ -144,7 +127,7 @@ func (v *HighPerformanceViewport) GotoBottomCmd() tea.Cmd {
 		return nil
 	}
 	v.GotoBottom()
-	return v.sync()
+	return nil
 }
 
 // Invalidate 清空已缓存的行，强制下次更新走全量同步。
@@ -153,31 +136,4 @@ func (v *HighPerformanceViewport) Invalidate() {
 		return
 	}
 	v.lastLines = nil
-}
-
-func (v *HighPerformanceViewport) sync() tea.Cmd {
-	if v == nil || !v.HighPerformanceRendering {
-		return nil
-	}
-	return viewport.Sync(v.Model)
-}
-
-func (v *HighPerformanceViewport) scrollDown(lines []string) tea.Cmd {
-	if v == nil || !v.HighPerformanceRendering {
-		return nil
-	}
-	if len(lines) == 0 {
-		return viewport.Sync(v.Model)
-	}
-	return viewport.ViewDown(v.Model, lines)
-}
-
-func appendedLines(prev, next []string) []string {
-	if len(next) == 0 || len(next) < len(prev) || len(prev) == 0 {
-		return nil
-	}
-	if !slices.Equal(prev, next[:len(prev)]) {
-		return nil
-	}
-	return next[len(prev):]
 }

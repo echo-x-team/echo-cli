@@ -150,7 +150,7 @@ type approvalPrompt struct {
 	text string
 }
 
-func New(opts Options) Model {
+func New(opts Options) *Model {
 	ti := textarea.New()
 	ti.Placeholder = "Ask Echo anything…"
 	ti.Prompt = "› "
@@ -234,10 +234,10 @@ func New(opts Options) Model {
 		m.gateway = opts.Gateway
 		m.eqSub = opts.Gateway.Events()
 	}
-	return m
+	return &m
 }
 
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, m.listenQueues()...)
 	cmds = append(cmds, m.spin.Tick)
@@ -254,7 +254,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -438,7 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.finish(cmds...)
 }
 
-func (m Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
+func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 	if m.transcriptDirty {
 		if cmd := m.flushTranscript(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -447,7 +447,7 @@ func (m Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
 	tip := renderTip(m.width)
 	chatBody := m.viewport.View()
@@ -487,17 +487,17 @@ func (m Model) View() string {
 }
 
 // History returns a copy of the chat history.
-func (m Model) History() []agent.Message {
+func (m *Model) History() []agent.Message {
 	return append([]agent.Message{}, m.messages...)
 }
 
 // SessionID returns the active session id if one is set.
-func (m Model) SessionID() string {
+func (m *Model) SessionID() string {
 	return m.resumeSessionID
 }
 
 // UpdateAction returns any pending update action (unused placeholder for parity).
-func (m Model) UpdateAction() string {
+func (m *Model) UpdateAction() string {
 	return m.updateAction
 }
 
@@ -547,7 +547,7 @@ func (m *Model) listenStream() tea.Cmd {
 	}
 }
 
-func (m Model) listenEvents() tea.Cmd {
+func (m *Model) listenEvents() tea.Cmd {
 	if m.eventsSub == nil {
 		return nil
 	}
@@ -560,7 +560,7 @@ func (m Model) listenEvents() tea.Cmd {
 	}
 }
 
-func (m Model) listenEngineEvents() tea.Cmd {
+func (m *Model) listenEngineEvents() tea.Cmd {
 	if m.eqSub == nil {
 		return nil
 	}
@@ -573,7 +573,7 @@ func (m Model) listenEngineEvents() tea.Cmd {
 	}
 }
 
-func (m Model) listenQueues() []tea.Cmd {
+func (m *Model) listenQueues() []tea.Cmd {
 	cmds := []tea.Cmd{}
 	if cmd := m.listenEvents(); cmd != nil {
 		cmds = append(cmds, cmd)
