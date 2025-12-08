@@ -13,3 +13,7 @@
 - [x] 停用高性能渲染路径，改用 Bubble Tea 默认渲染器并整理视口封装。
 - [x] 重命名 `internal/tui/render/high_performance_viewport.go` 为 `viewport.go` 并同步相关引用/测试文件。
 - [x] 运行 `gofmt -w ./...` 与 `go test ./...` 验证。
+- [x] 阅读 `3rd/codex/codex-rs/tui/src/status_indicator_widget.rs`，梳理状态指示器组件需求与状态枚举。
+- [x] 在 `internal/tui` 内实现对应的状态指示器组件与完整状态枚举。
+- [x] 为新组件补充表驱动测试（含状态渲染/计时逻辑），确保事件依约发布。
+- [x] 运行 `gofmt -w ./...` 与 `go test ./...` 验证。
