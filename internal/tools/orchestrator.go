@@ -9,16 +9,14 @@ import (
 
 // Orchestrator 负责审批与状态事件封装，抽象对齐 Codex 的“工具执行管线”。
 type Orchestrator struct {
-	policy    policy.Policy
-	approver  Approver
-	onFailure map[ToolKind]bool
+	policy   policy.Policy
+	approver Approver
 }
 
 func NewOrchestrator(pol policy.Policy, approver Approver) *Orchestrator {
 	return &Orchestrator{
-		policy:    pol,
-		approver:  approver,
-		onFailure: make(map[ToolKind]bool),
+		policy:   pol,
+		approver: approver,
 	}
 }
 
@@ -38,22 +36,49 @@ func (o *Orchestrator) Run(ctx context.Context, inv Invocation, handler Handler,
 	})
 
 	result, err := handler.Handle(ctx, inv)
-	result.ID = inv.Call.ID
-	result.Kind = handler.Kind()
+	result = normalizeResult(result, err, inv, handler)
 
-	if err != nil && result.Error == "" {
-		result.Error = err.Error()
-	}
-	if result.Status == "" {
-		if result.Error != "" {
-			result.Status = "error"
-		} else {
-			result.Status = "completed"
+	// 沙箱拒绝或 on-failure 策略下的失败，支持审批后提权重试。
+	if o.shouldRetryWithoutSandbox(err, inv.Policy) {
+		reason := "failed in sandbox"
+		if err != nil {
+			reason = err.Error()
 		}
-	}
-
-	if o.policy.ApprovalPolicy == "on-failure" {
-		o.onFailure[result.Kind] = result.Status == "error"
+		emit(ToolEvent{
+			Type:   "approval.requested",
+			Result: base,
+			Reason: fmt.Sprintf("retry without sandbox? %s", reason),
+		})
+		approved := false
+		if o.approver != nil {
+			approved = o.approver.Approve(inv.Call)
+		}
+		status := "denied"
+		if approved {
+			status = "approved"
+		}
+		emit(ToolEvent{
+			Type:   "approval.completed",
+			Result: base,
+			Reason: status,
+		})
+		if approved {
+			emit(ToolEvent{
+				Type: "item.updated",
+				Result: ToolResult{
+					ID:     base.ID,
+					Kind:   base.Kind,
+					Status: "retrying without sandbox",
+				},
+			})
+			escalated := inv
+			escalated.Policy.SandboxMode = "danger-full-access"
+			if inv.Runner != nil {
+				escalated.Runner = inv.Runner.WithMode("danger-full-access")
+			}
+			result, err = handler.Handle(ctx, escalated)
+			result = normalizeResult(result, err, escalated, handler)
+		}
 	}
 
 	emit(ToolEvent{
@@ -76,11 +101,6 @@ func (o *Orchestrator) decision(handler Handler, inv Invocation) policy.Decision
 		} else {
 			dec = inv.Policy.AllowCommand()
 		}
-	}
-	if inv.Policy.ApprovalPolicy == "on-failure" && o.onFailure[handler.Kind()] {
-		dec.RequiresApproval = true
-		dec.Allowed = false
-		dec.Reason = "prior failure in on-failure policy"
 	}
 	return dec
 }
@@ -134,4 +154,37 @@ func (o *Orchestrator) resolveApproval(call ToolCall, base ToolResult, dec polic
 		},
 	})
 	return false
+}
+
+func (o *Orchestrator) shouldRetryWithoutSandbox(err error, pol policy.Policy) bool {
+	if err == nil {
+		return false
+	}
+	if pol.ApprovalPolicy == "never" {
+		return false
+	}
+	if pol.SandboxMode == "danger-full-access" {
+		return false
+	}
+	if IsSandboxDenied(err) {
+		return true
+	}
+	return pol.ApprovalPolicy == "on-failure"
+}
+
+func normalizeResult(result ToolResult, err error, inv Invocation, handler Handler) ToolResult {
+	result.ID = inv.Call.ID
+	result.Kind = handler.Kind()
+
+	if err != nil && result.Error == "" {
+		result.Error = err.Error()
+	}
+	if result.Status == "" {
+		if result.Error != "" {
+			result.Status = "error"
+		} else {
+			result.Status = "completed"
+		}
+	}
+	return result
 }

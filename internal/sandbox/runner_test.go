@@ -35,7 +35,7 @@ func TestPatchPathsSafe(t *testing.T) {
 		"@@",
 		"+test",
 	}, "\n")
-	if !patchPathsSafe(root, okDiff, nil) {
+	if ok, _ := patchPathsSafe(root, okDiff, nil); !ok {
 		t.Fatalf("expected diff within root to be allowed")
 	}
 
@@ -45,7 +45,7 @@ func TestPatchPathsSafe(t *testing.T) {
 		"@@",
 		"+x",
 	}, "\n")
-	if patchPathsSafe(root, badDiff, nil) {
+	if ok, _ := patchPathsSafe(root, badDiff, nil); ok {
 		t.Fatalf("expected absolute path outside root to be rejected")
 	}
 
@@ -55,7 +55,7 @@ func TestPatchPathsSafe(t *testing.T) {
 		"@@",
 		"+x",
 	}, "\n")
-	if patchPathsSafe(root, escapeDiff, nil) {
+	if ok, _ := patchPathsSafe(root, escapeDiff, nil); ok {
 		t.Fatalf("expected relative escape to be rejected")
 	}
 }

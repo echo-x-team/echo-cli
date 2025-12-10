@@ -14,10 +14,7 @@ import (
 
 // Runner abstracts running commands/patches under a sandbox mode.
 // For now, this is a thin wrapper around tools with a placeholder for future isolation.
-type Runner interface {
-	RunCommand(ctx context.Context, workdir string, command string) (string, int, error)
-	ApplyPatch(ctx context.Context, workdir string, diff string) error
-}
+type Runner = tools.Runner
 
 type SafeRunner struct {
 	mode  policy.Policy
@@ -40,15 +37,15 @@ func (r SafeRunner) allowedRoots(workdir string) []string {
 
 func (r SafeRunner) RunCommand(ctx context.Context, workdir string, command string) (string, int, error) {
 	if r.mode.SandboxMode == "read-only" {
-		return "", -1, errors.New("sandbox read-only: command blocked")
+		return "", -1, tools.SandboxError{Reason: "sandbox read-only: command blocked"}
 	}
 	roots := r.allowedRoots(workdir)
 	if len(roots) > 0 {
 		if workdir == "" {
-			return "", -1, errors.New("workdir required for sandboxed command")
+			return "", -1, tools.SandboxError{Reason: "workdir required for sandboxed command"}
 		}
 		if !withinRoots(workdir, roots) {
-			return "", -1, errors.New("workdir outside allowed roots")
+			return "", -1, tools.SandboxError{Reason: "workdir outside allowed roots"}
 		}
 	}
 	return r.runWithSandbox(ctx, workdir, command, roots)
@@ -56,19 +53,20 @@ func (r SafeRunner) RunCommand(ctx context.Context, workdir string, command stri
 
 func (r SafeRunner) ApplyPatch(ctx context.Context, workdir string, diff string) error {
 	if r.mode.SandboxMode == "read-only" {
-		return errors.New("sandbox read-only: patch blocked")
+		return tools.SandboxError{Reason: "sandbox read-only: patch blocked"}
 	}
 	roots := r.allowedRoots(workdir)
 	if len(roots) > 0 && workdir == "" {
-		return errors.New("workdir required for sandboxed patch")
+		return tools.SandboxError{Reason: "workdir required for sandboxed patch"}
 	}
-	if !patchPathsSafe(workdir, diff, roots) {
-		return errors.New("patch references paths outside workspace")
+	if ok, reason := patchPathsSafe(workdir, diff, roots); !ok {
+		return tools.SandboxError{Reason: reason}
 	}
 	return tools.ApplyPatch(ctx, workdir, diff)
 }
 
-func patchPathsSafe(root string, diff string, roots []string) bool {
+func patchPathsSafe(root string, diff string, roots []string) (bool, string) {
+	const defaultReason = "patch references paths outside workspace"
 	if root == "" {
 		root = "."
 	}
@@ -85,17 +83,17 @@ func patchPathsSafe(root string, diff string, roots []string) bool {
 			}
 			if strings.HasPrefix(path, "/") {
 				if !withinRoots(path, roots) {
-					return false
+					return false, defaultReason
 				}
 				continue
 			}
 			clean := filepath.Clean(filepath.Join(root, path))
 			if !withinRoots(clean, roots) {
-				return false
+				return false, defaultReason
 			}
 		}
 	}
-	return true
+	return true, ""
 }
 
 func (r SafeRunner) runWithSandbox(ctx context.Context, workdir string, command string, roots []string) (string, int, error) {
@@ -134,6 +132,10 @@ func (r SafeRunner) runWithSandbox(ctx context.Context, workdir string, command 
 		return out, exitCode(err), err
 	}
 	return out, 0, nil
+}
+
+func (r SafeRunner) WithMode(mode string) tools.Runner {
+	return SafeRunner{mode: policy.Policy{SandboxMode: mode}, roots: r.roots}
 }
 
 func seatbeltProfile(mode string, roots []string) string {

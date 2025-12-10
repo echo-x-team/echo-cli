@@ -12,33 +12,29 @@ type Decision struct {
 }
 
 func (p Policy) AllowCommand() Decision {
-	if p.SandboxMode == "read-only" {
-		return Decision{Allowed: false, Reason: "blocked by sandbox read-only"}
-	}
-	if p.ApprovalPolicy == "untrusted" || p.ApprovalPolicy == "on-request" {
-		return Decision{Allowed: false, Reason: "requires approval", RequiresApproval: true}
-	}
-	if p.ApprovalPolicy == "auto-deny" {
-		return Decision{Allowed: false, Reason: "auto-deny policy"}
-	}
-	if p.ApprovalPolicy == "on-failure" {
-		return Decision{Allowed: true, Reason: "allow until failure"}
-	}
-	return Decision{Allowed: true}
+	return p.allow(false)
 }
 
 func (p Policy) AllowWrite() Decision {
-	if p.SandboxMode == "read-only" {
-		return Decision{Allowed: false, Reason: "blocked by sandbox read-only"}
-	}
-	if p.ApprovalPolicy == "untrusted" || p.ApprovalPolicy == "on-request" {
-		return Decision{Allowed: false, Reason: "requires approval", RequiresApproval: true}
-	}
+	return p.allow(true)
+}
+
+func (p Policy) allow(mutating bool) Decision {
 	if p.ApprovalPolicy == "auto-deny" {
 		return Decision{Allowed: false, Reason: "auto-deny policy"}
 	}
-	if p.ApprovalPolicy == "on-failure" {
-		return Decision{Allowed: true, Reason: "allow until failure"}
+
+	if p.ApprovalPolicy == "never" {
+		return Decision{Allowed: true}
 	}
+
+	if mutating && p.SandboxMode == "read-only" {
+		return Decision{Allowed: false, Reason: "sandbox read-only", RequiresApproval: true}
+	}
+
+	if mutating && (p.ApprovalPolicy == "untrusted" || p.ApprovalPolicy == "on-request") {
+		return Decision{Allowed: false, Reason: "requires approval", RequiresApproval: true}
+	}
+
 	return Decision{Allowed: true}
 }

@@ -10,10 +10,19 @@ import (
 )
 
 type stubRunner struct {
-	fail bool
+	fail         bool
+	sandboxBlock bool
+	mode         string
 }
 
 func (s *stubRunner) RunCommand(ctx context.Context, workdir string, command string) (string, int, error) {
+	if s.mode == "" {
+		s.mode = "workspace-write"
+	}
+	if s.sandboxBlock {
+		s.sandboxBlock = false
+		return "", -1, tools.SandboxError{Reason: "sandbox blocked"}
+	}
 	if s.fail {
 		return "", 1, errors.New("fail")
 	}
@@ -21,10 +30,22 @@ func (s *stubRunner) RunCommand(ctx context.Context, workdir string, command str
 }
 
 func (s *stubRunner) ApplyPatch(ctx context.Context, workdir string, diff string) error {
+	if s.mode == "" {
+		s.mode = "workspace-write"
+	}
+	if s.sandboxBlock {
+		s.sandboxBlock = false
+		return tools.SandboxError{Reason: "sandbox blocked"}
+	}
 	if s.fail {
 		return errors.New("fail")
 	}
 	return nil
+}
+
+func (s *stubRunner) WithMode(mode string) tools.Runner {
+	s.mode = mode
+	return s
 }
 
 type autoApprover struct {
@@ -33,31 +54,32 @@ type autoApprover struct {
 
 func (a autoApprover) Approve(tools.ToolCall) bool { return a.allow }
 
-func TestOnFailureApprovalFlow(t *testing.T) {
-	runner := &stubRunner{fail: true}
-	pol := policy.Policy{SandboxMode: "danger-full-access", ApprovalPolicy: "on-failure"}
+func TestSandboxDenialTriggersApprovalAndRetry(t *testing.T) {
+	runner := &stubRunner{sandboxBlock: true}
+	pol := policy.Policy{SandboxMode: "read-only", ApprovalPolicy: "on-request"}
 	eng := New(pol, runner, autoApprover{allow: true}, "")
 
 	var events []tools.ToolEvent
 	eng.Run(context.Background(), tools.ToolRequest{ID: "1", Kind: tools.ToolCommand, Command: "echo hi"}, func(ev tools.ToolEvent) {
 		events = append(events, ev)
 	})
-	if len(events) == 0 || events[len(events)-1].Result.Status != "error" {
-		t.Fatalf("expected failure event, got %+v", events)
-	}
-
-	runner.fail = false
-	events = nil
-	eng.Run(context.Background(), tools.ToolRequest{ID: "2", Kind: tools.ToolCommand, Command: "echo hi"}, func(ev tools.ToolEvent) {
-		events = append(events, ev)
-	})
 	foundApproval := false
+	finalStatus := ""
 	for _, ev := range events {
 		if ev.Type == "approval.requested" {
 			foundApproval = true
 		}
+		if ev.Type == "item.completed" {
+			finalStatus = ev.Result.Status
+		}
 	}
 	if !foundApproval {
-		t.Fatalf("expected approval after failure, got %+v", events)
+		t.Fatalf("expected approval on sandbox denial, got %+v", events)
+	}
+	if finalStatus != "completed" {
+		t.Fatalf("expected command to succeed after approval, got status=%s", finalStatus)
+	}
+	if runner.mode != "danger-full-access" {
+		t.Fatalf("expected runner escalated to danger-full-access, got %s", runner.mode)
 	}
 }

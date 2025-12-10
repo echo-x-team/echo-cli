@@ -10,6 +10,7 @@ import (
 type Runner interface {
 	RunCommand(ctx context.Context, workdir string, command string) (string, int, error)
 	ApplyPatch(ctx context.Context, workdir string, diff string) error
+	WithMode(mode string) Runner
 }
 
 // Invocation 提供 handler 执行所需的上下文。
