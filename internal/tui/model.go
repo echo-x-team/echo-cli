@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
@@ -119,6 +120,7 @@ type Model struct {
 	approver        *toolengine.UIApprover
 	pendingApprove  string
 	approveQueue    []approvalPrompt
+	queuedMessages  []string
 	pickingSession  bool
 	events          []uiEvent
 	resumeSessionID string
@@ -129,6 +131,7 @@ type Model struct {
 	spin            spinner.Model
 	showHelp        bool
 	transcriptDirty bool
+	pendingSince    time.Time
 }
 
 type streamEvent struct {
@@ -276,10 +279,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamIdx = len(m.messages) - 1
 		m.refreshTranscript()
 		m.pending = true
+		m.pendingSince = time.Now()
 		cmds = append(cmds, m.startStream(msg.Text))
 		return m.finish(cmds...)
 	case assistantReplyMsg:
-		m.finishStream(msg.Text)
+		if cmd := m.finishStream(msg.Text); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		return m.finish(cmds...)
 	case assistantChunkMsg:
 		m.appendChunk(msg.Text)
@@ -401,6 +407,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.finish(cmds...)
 		case "enter":
 			if m.pending {
+				input := strings.TrimSpace(m.textarea.Value())
+				if input == "" {
+					return m.finish(cmds...)
+				}
+				m.enqueueQueued(input)
+				m.textarea.Reset()
+				m.setComposerHeight()
 				return m.finish(cmds...)
 			}
 			input := strings.TrimSpace(m.textarea.Value())
@@ -422,6 +435,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Reset()
 			m.setComposerHeight()
 			m.pending = true
+			m.pendingSince = time.Now()
 			cmds = append(cmds, m.startStream(input))
 			return m.finish(cmds...)
 		}
@@ -444,13 +458,30 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
-	tip := renderTip(m.width)
-	chatPane := renderPane("", m.viewport.View(), m.width, m.viewport.Height)
+	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
+	quick := renderQuickHelp(m.width)
+	historyPane := renderPane("Conversation", m.viewport.View(), m.width, m.viewport.Height)
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
-	status := statusLine(m.modelName, m.sandbox, m.workdir, m.pending, m.err, m.width, m.spin)
+	status := m.statusLine(m.width)
+	queue := renderQueuedPreview(m.queuedMessages, m.pending, m.width)
 	hints := renderHints(m.width)
-	content := lipgloss.JoinVertical(lipgloss.Left, banner, tip, chatPane, composer, status, hints)
+
+	bottomParts := []string{}
+	if status != "" {
+		bottomParts = append(bottomParts, status)
+	}
+	if queue != "" {
+		bottomParts = append(bottomParts, queue)
+	}
+	bottomParts = append(bottomParts, composer, hints)
+	bottom := lipgloss.JoinVertical(lipgloss.Left, bottomParts...)
+
+	sections := []string{header}
+	if quick != "" {
+		sections = append(sections, quick)
+	}
+	sections = append(sections, historyPane, bottom)
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	if m.searching {
 		overlay := modalStyle.Render(m.search.View())
@@ -497,6 +528,7 @@ func (m *Model) startStream(input string) tea.Cmd {
 	if m.gateway == nil {
 		m.err = fmt.Errorf("submission gateway not configured")
 		m.pending = false
+		m.pendingSince = time.Time{}
 		return nil
 	}
 	if m.resumeSessionID == "" {
@@ -514,6 +546,7 @@ func (m *Model) startStream(input string) tea.Cmd {
 	if err != nil {
 		m.err = err
 		m.pending = false
+		m.pendingSince = time.Time{}
 		return nil
 	}
 	m.activeSub = id
@@ -618,9 +651,9 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 			if finalText == "" && m.streamIdx >= 0 && m.streamIdx < len(m.messages) {
 				finalText = m.messages[m.streamIdx].Content
 			}
-			m.finishStream(finalText)
+			cmd := m.finishStream(finalText)
 			m.activeSub = ""
-			return nil
+			return cmd
 		}
 		if msg.Content != "" {
 			m.appendChunk(msg.Content)
@@ -630,14 +663,18 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 			return nil
 		}
 		m.pending = false
+		m.pendingSince = time.Time{}
 		m.activeSub = ""
 		m.err = fmt.Errorf("%v", evt.Payload)
+		return m.startQueuedIfAny()
 	case events.EventTaskCompleted:
 		if evt.SubmissionID != m.activeSub {
 			return nil
 		}
 		m.pending = false
+		m.pendingSince = time.Time{}
 		m.activeSub = ""
+		return m.startQueuedIfAny()
 	}
 	return nil
 }
@@ -708,8 +745,33 @@ func (m *Model) advanceApproval() {
 	m.approveText = next.text
 }
 
-func (m *Model) finishStream(finalText string) {
+func (m *Model) enqueueQueued(text string) {
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return
+	}
+	m.queuedMessages = append(m.queuedMessages, normalized)
+	m.logEvent("queued", normalized)
+}
+
+func (m *Model) startQueuedIfAny() tea.Cmd {
+	if m.pending || len(m.queuedMessages) == 0 {
+		return nil
+	}
+	next := m.queuedMessages[0]
+	m.queuedMessages = m.queuedMessages[1:]
+	m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: next})
+	m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+	m.streamIdx = len(m.messages) - 1
+	m.refreshTranscript()
+	m.pending = true
+	m.pendingSince = time.Now()
+	return m.startStream(next)
+}
+
+func (m *Model) finishStream(finalText string) tea.Cmd {
 	m.pending = false
+	m.pendingSince = time.Time{}
 	m.err = nil
 	m.streamCh = nil
 	m.streamIdx = -1
@@ -718,6 +780,7 @@ func (m *Model) finishStream(finalText string) {
 	}
 	m.refreshTranscript()
 	m.logEvent("agent_message", "assistant reply completed")
+	return m.startQueuedIfAny()
 }
 
 func (m *Model) appendChunk(chunk string) {
@@ -732,31 +795,28 @@ func (m *Model) resize(width, height int) []tea.Cmd {
 	cmds := []tea.Cmd{}
 	m.width = width
 	m.height = height
-	composerHeight := m.textarea.Height() + 3 // title + border
-	headerHeight := 6                         // approximate banner height with border
-	tipHeight := 1
-	statusHeight := 1
-	hintsHeight := 1
-	mainHeight := height - composerHeight - headerHeight - statusHeight - hintsHeight - tipHeight
-	if mainHeight < 6 {
-		mainHeight = 6
-	}
-	eventsWidth := 0
-	chatWidth := width
-	m.eventsWidth = eventsWidth
 
-	contentHeight := mainHeight - 2 // border + title
-	if contentHeight < 3 {
-		contentHeight = 3
+	headerHeight := lipgloss.Height(renderSessionCard(m.modelName, m.reasoning, m.workdir, width))
+	quickHelpHeight := lipgloss.Height(renderQuickHelp(width))
+	statusHeight := lipgloss.Height(m.statusLine(width))
+	queueHeight := lipgloss.Height(renderQueuedPreview(m.queuedMessages, m.pending, width))
+	hintsHeight := lipgloss.Height(renderHints(width))
+	composerHeight := m.textarea.Height() + 3 // body + border + title
+
+	historyBlockHeight := height - headerHeight - quickHelpHeight - statusHeight - queueHeight - composerHeight - hintsHeight
+	if historyBlockHeight < 5 {
+		historyBlockHeight = 5
 	}
-	if chatWidth > 0 {
-		m.viewport.Width = chatWidth
+	// renderPane adds a border and title (~3 rows), keep body height positive.
+	historyBodyHeight := historyBlockHeight - 3
+	if historyBodyHeight < 3 {
+		historyBodyHeight = 3
 	}
-	if eventsWidth > 0 {
-		m.eventsPane.Width = eventsWidth
-		m.eventsPane.Height = contentHeight
+
+	if width > 0 {
+		m.viewport.Width = width
 	}
-	if cmd := m.viewport.Resize(chatWidth, contentHeight); cmd != nil {
+	if cmd := m.viewport.Resize(width, historyBodyHeight); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	m.textarea.SetWidth(width)
@@ -808,19 +868,37 @@ func (m *Model) renderTranscriptLines() []string {
 	return render.LinesToStrings(lines)
 }
 
-func statusLine(model, sandbox, workdir string, pending bool, err error, width int, spin spinner.Model) string {
+func (m *Model) statusLine(width int) string {
 	parts := []string{
-		fmt.Sprintf("Model: %s", model),
-		fmt.Sprintf("Sandbox: %s", sandbox),
+		fmt.Sprintf("Model: %s", m.modelName),
+		fmt.Sprintf("Sandbox: %s", m.sandbox),
 	}
-	if workdir != "" {
-		parts = append(parts, fmt.Sprintf("Dir: %s", workdir))
+	if m.workdir != "" {
+		parts = append(parts, fmt.Sprintf("Dir: %s", m.workdir))
 	}
-	if pending {
-		parts = append(parts, "Working… "+spin.View())
+	if m.pending {
+		elapsed := ""
+		if !m.pendingSince.IsZero() {
+			secs := int(time.Since(m.pendingSince).Seconds())
+			if secs < 0 {
+				secs = 0
+			}
+			elapsed = fmt.Sprintf("%ds", secs)
+		}
+		label := "Working… " + m.spin.View()
+		if elapsed != "" {
+			label = fmt.Sprintf("%s (%s)", label, elapsed)
+		}
+		parts = append(parts, label+" • Esc to interrupt")
 	}
-	if err != nil {
-		parts = append(parts, fmt.Sprintf("Error: %v", err))
+	if len(m.queuedMessages) > 0 {
+		parts = append(parts, fmt.Sprintf("Queued:%d", len(m.queuedMessages)))
+	}
+	if m.pendingApprove != "" {
+		parts = append(parts, "Approval pending")
+	}
+	if m.err != nil {
+		parts = append(parts, fmt.Sprintf("Error: %v", m.err))
 	}
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
@@ -846,27 +924,23 @@ func renderHeader(model, sandbox, workdir string, width int) string {
 
 const tuiVersion = "v0.65.0"
 
-func renderBanner(model, reasoning, workdir string, width int) string {
-	line1 := fmt.Sprintf(">_ Echo Team Echo (%s)", tuiVersion)
+func renderSessionCard(model, reasoning, workdir string, width int) string {
 	modelText := model
 	if reasoning != "" {
 		modelText = fmt.Sprintf("%s %s", model, reasoning)
 	}
-	line2 := fmt.Sprintf("model:     %s   /model to change", modelText)
-	dirLine := fmt.Sprintf("directory: %s", workdir)
-
-	body := []string{
-		line1,
+	lines := []string{
+		fmt.Sprintf(">_ Echo Team Echo (%s)", tuiVersion),
 		"",
-		line2,
-		dirLine,
+		fmt.Sprintf("model:     %s   /model to change", modelText),
+		fmt.Sprintf("directory: %s", workdir),
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#7D56F4")).
 		Padding(0, 1).
 		Width(maxInt(40, width)).
-		Render(strings.Join(body, "\n"))
+		Render(strings.Join(lines, "\n"))
 }
 
 func renderPane(title string, body string, width int, height int) string {
@@ -892,12 +966,17 @@ func renderPane(title string, body string, width int, height int) string {
 	return style.Render(content)
 }
 
-func renderTip(width int) string {
+func renderQuickHelp(width int) string {
+	help := []string{
+		"Quick actions:",
+		"/init 创建 AGENTS.md • /status 查看状态 • /approvals 设置审批策略",
+		"/model 选择模型 • /sessions 恢复会话 • @ 文件搜索",
+	}
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
-		Padding(0, 2).
-		Width(maxInt(20, width)).
-		Render("Tip: Run /init to scaffold AGENTS.md for this repo; /feedback shares logs when something looks off.")
+		Padding(0, 1).
+		Width(maxInt(30, width)).
+		Render(strings.Join(help, "\n"))
 }
 
 func renderHints(width int) string {
@@ -909,10 +988,39 @@ func renderHints(width int) string {
 		Render(hint)
 }
 
+func renderQueuedPreview(queue []string, pending bool, width int) string {
+	if len(queue) == 0 || width <= 4 || !pending {
+		return ""
+	}
+	limit := len(queue)
+	if limit > 3 {
+		limit = 3
+	}
+	lines := make([]string, 0, limit+1)
+	for i := 0; i < limit; i++ {
+		text := strings.ReplaceAll(queue[i], "\n", " ")
+		if len(text) > width-4 && width > 4 {
+			text = text[:width-7] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("↳ %s", text))
+	}
+	if len(queue) > limit {
+		lines = append(lines, fmt.Sprintf("… %d more queued", len(queue)-limit))
+	}
+	hint := lipgloss.NewStyle().Faint(true).Render("Alt+↑ edit queued")
+	lines = append(lines, hint)
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7D7A85")).
+		Italic(true).
+		Padding(0, 1).
+		Width(maxInt(20, width)).
+		Render(strings.Join(lines, "\n"))
+}
+
 func (m *Model) viewportTop() int {
-	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
-	tip := renderTip(m.width)
-	top := lipgloss.Height(banner) + lipgloss.Height(tip) + 1 // border 顶部占一行
+	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
+	quick := renderQuickHelp(m.width)
+	top := lipgloss.Height(header) + lipgloss.Height(quick)
 	if top < 0 {
 		return 0
 	}
