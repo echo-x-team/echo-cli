@@ -22,6 +22,7 @@ import (
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
 	"echo-cli/internal/tools/dispatcher"
+	"echo-cli/internal/tui/slash"
 
 	"github.com/google/uuid"
 )
@@ -347,6 +348,24 @@ func execMain(root rootArgs, args []string) {
 	attachments := []events.InputMessage{}
 	attachments = append(attachments, attachmentMessages([]string(attachPaths), workdir)...)
 	attachments = append(attachments, imageAttachmentMessages([]string(imagePaths), workdir)...)
+
+	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
+		action := repl.ResolveSlashAction(prompt, slash.Options{})
+		switch action.Kind {
+		case slash.ActionSubmitPrompt:
+			if strings.TrimSpace(action.SubmitText) != "" {
+				prompt = action.SubmitText
+			}
+		case slash.ActionSubmitCommand:
+			log.Fatalf("slash command %s is not supported in exec mode; use interactive UI instead", action.Command)
+		case slash.ActionError:
+			log.Fatalf("%s", action.Message)
+		case slash.ActionInsert:
+			if strings.TrimSpace(action.NewValue) != "" {
+				prompt = strings.TrimSpace(action.NewValue)
+			}
+		}
+	}
 
 	itemID := "item_0"
 	emitEvent(jsonEvent{Type: "thread.started"})

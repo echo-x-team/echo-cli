@@ -8,6 +8,7 @@ import (
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/tools/engine"
 	"echo-cli/internal/tui"
+	"echo-cli/internal/tui/slash"
 )
 
 // UIOptions 描述启动 TUI 所需的依赖与初始状态。
@@ -30,6 +31,9 @@ type UIOptions struct {
 	ResumeShowAll   bool
 	ResumeSessions  []string
 	ResumeSessionID string
+	CustomPrompts   []slash.CustomPrompt
+	SkillsAvailable bool
+	Debug           bool
 }
 
 // UIResult 返回 TUI 退出时的历史与状态。
@@ -60,6 +64,9 @@ func RunUI(opts UIOptions) (UIResult, error) {
 		ResumeShowAll:   opts.ResumeShowAll,
 		ResumeSessions:  opts.ResumeSessions,
 		ResumeSessionID: opts.ResumeSessionID,
+		CustomPrompts:   opts.CustomPrompts,
+		SkillsAvailable: opts.SkillsAvailable,
+		Debug:           opts.Debug,
 	})
 	if err != nil {
 		return UIResult{}, err

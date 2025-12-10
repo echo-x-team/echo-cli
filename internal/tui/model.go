@@ -19,6 +19,7 @@ import (
 	"echo-cli/internal/tools"
 	toolengine "echo-cli/internal/tools/engine"
 	"echo-cli/internal/tui/render"
+	"echo-cli/internal/tui/slash"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -48,6 +49,9 @@ type Options struct {
 	ResumeShowAll   bool
 	ResumeSessions  []string
 	ResumeSessionID string
+	CustomPrompts   []slash.CustomPrompt
+	SkillsAvailable bool
+	Debug           bool
 }
 
 // SubmissionGateway 抽象 REPL 层提交/订阅能力，避免 TUI 与实现耦合。
@@ -132,6 +136,8 @@ type Model struct {
 	showHelp        bool
 	transcriptDirty bool
 	pendingSince    time.Time
+	slash           *slash.State
+	reviewMode      bool
 }
 
 type streamEvent struct {
@@ -192,6 +198,12 @@ func New(opts Options) *Model {
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
 
+	sl := slash.NewState(slash.Options{
+		CustomPrompts:   opts.CustomPrompts,
+		SkillsAvailable: opts.SkillsAvailable,
+		Debug:           opts.Debug,
+	})
+
 	m := Model{
 		textarea:        ti,
 		viewport:        vp,
@@ -218,6 +230,7 @@ func New(opts Options) *Model {
 		eventsWidth:     32,
 		spin:            spin,
 		transcriptDirty: true,
+		slash:           sl,
 	}
 	if len(m.roots) == 0 && m.workdir != "" {
 		m.roots = []string{m.workdir}
@@ -255,6 +268,7 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	defer m.syncSlashState()
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -388,6 +402,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.finish(cmds...)
 		}
+		if m.slash != nil && m.slash.Open() {
+			if action, handled := m.handleSlashKey(msg); handled {
+				if cmd := m.applySlashAction(action); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m.finish(cmds...)
+			}
+		}
 		if cmd, handled := m.handleScrollKeys(msg); handled {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
@@ -416,14 +438,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setComposerHeight()
 				return m.finish(cmds...)
 			}
-			input := strings.TrimSpace(m.textarea.Value())
+			value := m.textarea.Value()
+			input := strings.TrimSpace(value)
 			if input == "" {
 				return m.finish(cmds...)
 			}
-			if strings.HasPrefix(input, "/") {
-				cmd := m.handleSlash(input)
-				m.textarea.Reset()
-				if cmd != nil {
+			if action := m.resolveSlashSubmit(value); action.Kind != slash.ActionNone {
+				if cmd := m.applySlashAction(action); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				return m.finish(cmds...)
@@ -497,6 +518,14 @@ func (m *Model) View() string {
 		)
 		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
 	}
+	if m.slash != nil && m.slash.Open() {
+		width := m.width - 4
+		if width < 20 {
+			width = m.width
+		}
+		overlay := modalStyle.Render(m.slash.View(width))
+		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
+	}
 	if m.showHelp {
 		help := strings.Join([]string{
 			"快捷键",
@@ -539,6 +568,7 @@ func (m *Model) startStream(input string) tea.Cmd {
 		Model:           m.modelName,
 		Language:        m.language,
 		ReasoningEffort: m.reasoning,
+		ReviewMode:      m.reviewMode,
 	}
 	id, err := m.gateway.SubmitUserInput(context.Background(), []events.InputMessage{
 		{Role: "user", Content: input},
@@ -842,6 +872,96 @@ func (m *Model) setComposerHeight() {
 	}
 }
 
+func (m *Model) syncSlashState() {
+	if m.slash == nil {
+		return
+	}
+	lineInfo := m.textarea.LineInfo()
+	cursorCol := lineInfo.StartColumn + lineInfo.ColumnOffset
+	m.slash.SyncInput(slash.Input{
+		Value:        m.textarea.Value(),
+		CursorLine:   m.textarea.Line(),
+		CursorColumn: cursorCol,
+		Blocked:      m.searching || m.pendingApprove != "" || m.pickingSession,
+	})
+}
+
+func (m *Model) moveCursorToColumn(col int) {
+	if col < 0 {
+		col = 0
+	}
+	for m.textarea.Line() > 0 {
+		m.textarea.CursorUp()
+	}
+	m.textarea.SetCursor(col)
+}
+
+func (m *Model) handleSlashKey(msg tea.KeyMsg) (slash.Action, bool) {
+	if m.slash == nil {
+		return slash.Action{}, false
+	}
+	return m.slash.HandleKey(msg.String())
+}
+
+func (m *Model) resolveSlashSubmit(value string) slash.Action {
+	if m.slash == nil {
+		return slash.Action{Kind: slash.ActionNone}
+	}
+	trimmed := strings.TrimLeft(value, " \t")
+	if !strings.HasPrefix(trimmed, "/") {
+		return slash.Action{Kind: slash.ActionNone}
+	}
+	return m.slash.ResolveSubmit(value)
+}
+
+func (m *Model) applySlashAction(action slash.Action) tea.Cmd {
+	switch action.Kind {
+	case slash.ActionInsert:
+		if action.NewValue != "" {
+			m.textarea.SetValue(action.NewValue)
+			m.moveCursorToColumn(action.CursorColumn)
+			m.setComposerHeight()
+		}
+	case slash.ActionSubmitCommand:
+		m.textarea.Reset()
+		m.setComposerHeight()
+		return m.executeSlashCommand(action.Command, action.Args)
+	case slash.ActionSubmitPrompt:
+		m.textarea.Reset()
+		m.setComposerHeight()
+		return m.submitSlashPrompt(action)
+	case slash.ActionError:
+		if action.Message != "" {
+			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: action.Message})
+			m.refreshTranscript()
+		}
+	case slash.ActionClose, slash.ActionNone:
+		// no-op
+	}
+	return nil
+}
+
+func (m *Model) submitSlashPrompt(action slash.Action) tea.Cmd {
+	text := strings.TrimSpace(action.SubmitText)
+	if text == "" {
+		text = strings.TrimSpace(action.Args)
+	}
+	if text == "" {
+		return nil
+	}
+	if m.pending {
+		m.enqueueQueued(text)
+		return nil
+	}
+	m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: text})
+	m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+	m.streamIdx = len(m.messages) - 1
+	m.refreshTranscript()
+	m.pending = true
+	m.pendingSince = time.Now()
+	return m.startStream(text)
+}
+
 func (m *Model) refreshTranscript() {
 	m.transcriptDirty = true
 }
@@ -1125,24 +1245,41 @@ func (i listItem) Title() string       { return string(i) }
 func (i listItem) Description() string { return "" }
 
 func (m *Model) handleSlash(input string) tea.Cmd {
-	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return nil
+	action := m.resolveSlashSubmit(input)
+	switch action.Kind {
+	case slash.ActionSubmitCommand:
+		return m.executeSlashCommand(action.Command, action.Args)
+	case slash.ActionSubmitPrompt:
+		return m.submitSlashPrompt(action)
+	case slash.ActionInsert:
+		if action.NewValue != "" {
+			m.textarea.SetValue(action.NewValue)
+			m.moveCursorToColumn(action.CursorColumn)
+			m.setComposerHeight()
+		}
+	case slash.ActionError:
+		if action.Message != "" {
+			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: action.Message})
+			m.refreshTranscript()
+		}
 	}
-	cmd := parts[0]
+	return nil
+}
+
+func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 	switch cmd {
-	case "/quit", "/exit":
+	case slash.CommandQuit, slash.CommandExit:
 		return tea.Quit
-	case "/clear":
+	case slash.CommandClear:
 		m.messages = nil
 		m.refreshTranscript()
 		return nil
-	case "/status":
+	case slash.CommandStatus:
 		info := fmt.Sprintf("model=%s sandbox=%s dir=%s", m.modelName, m.sandbox, m.workdir)
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: info})
 		m.refreshTranscript()
 		return nil
-	case "/sessions":
+	case slash.CommandSessions:
 		ids, err := session.ListIDs()
 		if err != nil {
 			return func() tea.Msg { return systemMsg{Text: fmt.Sprintf("sessions error: %v", err)} }
@@ -1154,24 +1291,24 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		m.sessions.SetItems(items)
 		m.pickingSession = true
 		return nil
-	case "/model":
-		if len(parts) > 1 {
-			m.modelName = parts[1]
+	case slash.CommandModel:
+		if arg := firstArg(args); arg != "" {
+			m.modelName = arg
 		}
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("using model %s", m.modelName)})
 		m.refreshTranscript()
 		return nil
-	case "/approvals":
-		if len(parts) > 1 {
-			m.policy.ApprovalPolicy = parts[1]
+	case slash.CommandApprovals:
+		if arg := firstArg(args); arg != "" {
+			m.policy.ApprovalPolicy = arg
 			m.engine = toolengine.New(m.policy, m.runner, m.approver, m.workdir)
 		}
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("approval policy=%s", m.policy.ApprovalPolicy)})
 		m.refreshTranscript()
 		return nil
-	case "/init":
+	case slash.CommandInit:
 		return m.handleInitCommand()
-	case "/resume":
+	case slash.CommandResume:
 		rec, err := session.Last()
 		if err != nil {
 			return func() tea.Msg { return systemMsg{Text: fmt.Sprintf("resume error: %v", err)} }
@@ -1180,19 +1317,19 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		m.resumeSessionID = rec.ID
 		m.refreshTranscript()
 		return nil
-	case "/diff":
+	case slash.CommandDiff:
 		return m.runTool(tools.ToolRequest{
 			ID:      "local-diff",
 			Kind:    tools.ToolCommand,
 			Command: "git diff --stat",
 		})
-	case "/add-dir":
-		if len(parts) < 2 {
+	case slash.CommandAddDir:
+		if args == "" {
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /add-dir <path>"})
 			m.refreshTranscript()
 			return nil
 		}
-		path := parts[1]
+		path := firstArg(args)
 		if !filepath.IsAbs(path) && m.workdir != "" {
 			path = filepath.Join(m.workdir, path)
 		}
@@ -1202,25 +1339,24 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("added workspace root: %s", path)})
 		m.refreshTranscript()
 		return nil
-	case "/run":
-		if len(parts) < 2 {
+	case slash.CommandRun:
+		if args == "" {
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /run <command>"})
 			m.refreshTranscript()
 			return nil
 		}
-		command := strings.TrimPrefix(input, "/run ")
 		return m.runTool(tools.ToolRequest{
 			ID:      "local-run",
 			Kind:    tools.ToolCommand,
-			Command: command,
+			Command: args,
 		})
-	case "/apply":
-		if len(parts) < 2 {
+	case slash.CommandApply:
+		if args == "" {
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /apply <patch-file>"})
 			m.refreshTranscript()
 			return nil
 		}
-		patchPath := parts[1]
+		patchPath := firstArg(args)
 		abs := patchPath
 		if !filepath.IsAbs(patchPath) && m.workdir != "" {
 			abs = filepath.Join(m.workdir, patchPath)
@@ -1235,13 +1371,14 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 			Path:  patchPath,
 			Patch: string(data),
 		})
-	case "/attach":
-		if len(parts) < 2 {
+	case slash.CommandAttach:
+		if args == "" {
 			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /attach <file>"})
 			m.refreshTranscript()
 			return nil
 		}
-		target := parts[1]
+		target := firstArg(args)
+		display := target
 		if !filepath.IsAbs(target) && m.workdir != "" {
 			target = filepath.Join(m.workdir, target)
 		}
@@ -1249,22 +1386,75 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		if err != nil {
 			return func() tea.Msg { return systemMsg{Text: fmt.Sprintf("attach failed: %v", err)} }
 		}
-		msg := agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("Attachment %s:\n%s", parts[1], string(data))}
+		msg := agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("Attachment %s:\n%s", display, string(data))}
 		m.messages = append(m.messages, msg)
 		m.refreshTranscript()
 		return nil
-	case "/mention":
+	case slash.CommandMention:
 		return m.loadSearch()
-	case "/feedback":
+	case slash.CommandFeedback:
 		msg := "feedback captured (local only); thank you!"
-		if len(parts) > 1 {
-			msg = strings.TrimPrefix(input, "/feedback ")
+		if strings.TrimSpace(args) != "" {
+			msg = strings.TrimSpace(strings.TrimPrefix(args, "/feedback "))
 		}
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: msg})
 		m.refreshTranscript()
 		return nil
+	case slash.CommandNew:
+		m.resetSession()
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Started a new session."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandReview:
+		m.reviewMode = true
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Review mode enabled for subsequent turns."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandCompact:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "compact command not implemented yet."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandUndo:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "undo is not available in this build."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandMCP:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "MCP UI not implemented in Go TUI yet."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandLogout:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Use `echo-cli logout` to clear credentials."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandSkills:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "No skills metadata available."})
+		m.refreshTranscript()
+		return nil
+	case slash.CommandRollout, slash.CommandTestApproval:
+		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Debug-only command not supported in this build."})
+		m.refreshTranscript()
+		return nil
 	}
 	return nil
+}
+
+func (m *Model) resetSession() {
+	m.messages = nil
+	m.streamIdx = -1
+	m.pending = false
+	m.pendingSince = time.Time{}
+	m.activeSub = ""
+	m.queuedMessages = nil
+	m.resumeSessionID = ""
+	m.reviewMode = false
+}
+
+func firstArg(args string) string {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func (m *Model) runTool(req tools.ToolRequest) tea.Cmd {
