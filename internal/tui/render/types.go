@@ -53,3 +53,17 @@ func LinesToStrings(lines []Line) []string {
 	}
 	return out
 }
+
+// LinesToPlainStrings 去除样式，返回纯文本行。
+func LinesToPlainStrings(lines []Line) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		segments := make([]string, 0, len(line.Spans))
+		for _, sp := range line.Spans {
+			segments = append(segments, sp.Text)
+		}
+		text := strings.Join(segments, "")
+		out = append(out, text)
+	}
+	return out
+}

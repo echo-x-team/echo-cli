@@ -26,6 +26,7 @@ type interactiveArgs struct {
 	resumeLast        bool
 	resumeSessionID   string
 	resumeShowAll     bool
+	copyableOutput    bool
 }
 
 func newInteractiveFlagSet(name string) (*flag.FlagSet, *interactiveArgs) {
@@ -54,6 +55,7 @@ func newInteractiveFlagSet(name string) (*flag.FlagSet, *interactiveArgs) {
 	fs.Var(&args.imagePaths, "i", "Alias for --image")
 	fs.BoolVar(&args.search, "search", false, "Enable web search feature flag")
 	fs.Var(&args.configOverrides, "c", "Override config value key=value (repeatable)")
+	fs.BoolVar(&args.copyableOutput, "copyable-output", true, "Disable alt screen to allow mouse selection/copy")
 
 	return fs, args
 }

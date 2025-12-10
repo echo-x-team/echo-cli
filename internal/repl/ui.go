@@ -4,6 +4,7 @@ import (
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
+	"echo-cli/internal/logger"
 	"echo-cli/internal/policy"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/tools/engine"
@@ -34,6 +35,8 @@ type UIOptions struct {
 	CustomPrompts   []slash.CustomPrompt
 	SkillsAvailable bool
 	Debug           bool
+	ConversationLog *logger.LogEntry
+	CopyableOutput  bool
 }
 
 // UIResult 返回 TUI 退出时的历史与状态。
@@ -67,6 +70,8 @@ func RunUI(opts UIOptions) (UIResult, error) {
 		CustomPrompts:   opts.CustomPrompts,
 		SkillsAvailable: opts.SkillsAvailable,
 		Debug:           opts.Debug,
+		ConversationLog: opts.ConversationLog,
+		CopyableOutput:  opts.CopyableOutput,
 	})
 	if err != nil {
 		return UIResult{}, err

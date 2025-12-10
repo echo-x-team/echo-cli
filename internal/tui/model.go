@@ -12,6 +12,7 @@ import (
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
 	"echo-cli/internal/i18n"
+	"echo-cli/internal/logger"
 	"echo-cli/internal/policy"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/search"
@@ -21,6 +22,7 @@ import (
 	"echo-cli/internal/tui/render"
 	"echo-cli/internal/tui/slash"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -52,6 +54,8 @@ type Options struct {
 	CustomPrompts   []slash.CustomPrompt
 	SkillsAvailable bool
 	Debug           bool
+	ConversationLog *logger.LogEntry
+	CopyableOutput  bool
 }
 
 // SubmissionGateway 抽象 REPL 层提交/订阅能力，避免 TUI 与实现耦合。
@@ -94,50 +98,52 @@ type systemMsg struct {
 }
 
 type Model struct {
-	textarea        textarea.Model
-	viewport        render.HighPerformanceViewport
-	eventsPane      viewport.Model
-	search          list.Model
-	sessions        list.Model
-	messages        []agent.Message
-	streamIdx       int
-	streamCh        chan streamEvent
-	modelName       string
-	reasoning       string
-	sandbox         string
-	language        string
-	workdir         string
-	policy          policy.Policy
-	runner          sandbox.Runner
-	engine          *toolengine.Engine
-	roots           []string
-	eventsSub       <-chan any
-	gateway         SubmissionGateway
-	eqSub           <-chan events.Event
-	activeSub       string
-	pending         bool
-	err             error
-	initSend        string
-	searching       bool
-	mentionAt       int
-	approveText     string
-	approver        *toolengine.UIApprover
-	pendingApprove  string
-	approveQueue    []approvalPrompt
-	queuedMessages  []string
-	pickingSession  bool
-	events          []uiEvent
-	resumeSessionID string
-	updateAction    string
-	width           int
-	height          int
-	eventsWidth     int
-	spin            spinner.Model
-	showHelp        bool
-	transcriptDirty bool
-	pendingSince    time.Time
-	slash           *slash.State
-	reviewMode      bool
+	textarea                 textarea.Model
+	viewport                 render.HighPerformanceViewport
+	eventsPane               viewport.Model
+	search                   list.Model
+	sessions                 list.Model
+	messages                 []agent.Message
+	streamIdx                int
+	streamCh                 chan streamEvent
+	modelName                string
+	reasoning                string
+	sandbox                  string
+	language                 string
+	workdir                  string
+	policy                   policy.Policy
+	runner                   sandbox.Runner
+	engine                   *toolengine.Engine
+	roots                    []string
+	eventsSub                <-chan any
+	gateway                  SubmissionGateway
+	eqSub                    <-chan events.Event
+	activeSub                string
+	pending                  bool
+	err                      error
+	initSend                 string
+	searching                bool
+	mentionAt                int
+	approveText              string
+	approver                 *toolengine.UIApprover
+	pendingApprove           string
+	approveQueue             []approvalPrompt
+	queuedMessages           []string
+	pickingSession           bool
+	events                   []uiEvent
+	resumeSessionID          string
+	updateAction             string
+	width                    int
+	height                   int
+	eventsWidth              int
+	spin                     spinner.Model
+	showHelp                 bool
+	transcriptDirty          bool
+	pendingSince             time.Time
+	slash                    *slash.State
+	reviewMode               bool
+	conversationLog          *logger.LogEntry
+	lastConversationSnapshot string
 }
 
 type streamEvent struct {
@@ -231,6 +237,7 @@ func New(opts Options) *Model {
 		spin:            spin,
 		transcriptDirty: true,
 		slash:           sl,
+		conversationLog: opts.ConversationLog,
 	}
 	if len(m.roots) == 0 && m.workdir != "" {
 		m.roots = []string{m.workdir}
@@ -342,6 +349,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyEnter && msg.Alt {
 			break
+		}
+		if msg.Type == tea.KeyCtrlY {
+			m.copyConversation()
+			return m.finish(cmds...)
 		}
 		if m.pickingSession {
 			var cmd tea.Cmd
@@ -970,22 +981,62 @@ func (m *Model) flushTranscript() tea.Cmd {
 	if !m.transcriptDirty {
 		return nil
 	}
-	lines := m.renderTranscriptLines()
+	lines, plain := m.renderTranscriptLines()
+	m.logConversationSnapshot(plain)
 	m.transcriptDirty = false
 	m.viewport.SetYPosition(m.viewportTop())
 	return m.viewport.SetLines(lines)
 }
 
-func (m *Model) renderTranscriptLines() []string {
+func (m *Model) renderTranscriptLines() ([]string, []string) {
 	width := m.viewport.Width
 	if width <= 0 {
 		width = 80
 	}
 	lines := render.RenderMessages(m.messages, width)
 	if len(lines) == 0 {
-		return []string{"Welcome to Echo (Go). Type a message to start."}
+		lines = []render.Line{{Spans: []render.Span{{Text: "Welcome to Echo (Go). Type a message to start."}}}}
 	}
-	return render.LinesToStrings(lines)
+	return render.LinesToStrings(lines), render.LinesToPlainStrings(lines)
+}
+
+func (m *Model) logConversationSnapshot(lines []string) {
+	if m.conversationLog == nil {
+		return
+	}
+	snapshot := strings.Join(lines, "\n")
+	if strings.TrimSpace(snapshot) == "" {
+		return
+	}
+	if snapshot == m.lastConversationSnapshot {
+		return
+	}
+	m.lastConversationSnapshot = snapshot
+	m.conversationLog.Infof("conversation snapshot\n%s", snapshot)
+}
+
+func (m *Model) copyConversation() {
+	if len(m.messages) == 0 {
+		m.logEvent("copy", "conversation is empty")
+		return
+	}
+	width := m.viewport.Width
+	if width <= 0 {
+		width = 80
+	}
+	lines := render.RenderMessages(m.messages, width)
+	plain := render.LinesToPlainStrings(lines)
+	text := strings.Join(plain, "\n")
+	if strings.TrimSpace(text) == "" {
+		m.logEvent("copy", "conversation is empty")
+		return
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.err = fmt.Errorf("copy conversation failed: %w", err)
+		m.logEvent("copy_error", m.err.Error())
+		return
+	}
+	m.logEvent("copy", "conversation copied to clipboard")
 }
 
 func (m *Model) statusLine(width int) string {
@@ -1100,7 +1151,7 @@ func renderQuickHelp(width int) string {
 }
 
 func renderHints(width int) string {
-	hint := "↑/↓ 滚动 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
+	hint := "↑/↓ 滚动 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 1).

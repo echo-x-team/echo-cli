@@ -181,6 +181,15 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 	system := instructions.Discover(workdir)
 	bus := events.NewBus()
 	defer bus.Close()
+	conversationLog := logger.Named("conversation")
+	if entry, closer, _, err := logger.SetupComponentFile("conversation", logger.DefaultConversationLogPath); err != nil {
+		log.Warnf("failed to initialize conversation log (%s): %v", logger.DefaultConversationLogPath, err)
+	} else {
+		conversationLog = entry
+		if closer != nil {
+			defer closer.Close()
+		}
+	}
 	pol := policy.Policy{SandboxMode: cfg.SandboxMode, ApprovalPolicy: cfg.ApprovalPolicy}
 	roots := append([]string{}, cfg.WorkspaceDirs...)
 	roots = append(roots, workdir)
@@ -237,6 +246,8 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		ResumeShowAll:   cli.resumeShowAll,
 		ResumeSessions:  resumeIDs,
 		ResumeSessionID: seedSessionID,
+		ConversationLog: conversationLog,
+		CopyableOutput:  cli.copyableOutput,
 	})
 	if err != nil {
 		log.Fatalf("program exit: %v", err)

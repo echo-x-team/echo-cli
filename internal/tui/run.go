@@ -17,10 +17,11 @@ type Result struct {
 
 // Run 封装 Bubble Tea 入口，返回最终的 UI 结果。
 func Run(opts Options) (Result, error) {
-	program := tea.NewProgram(
-		New(opts),
-		tea.WithAltScreen(),
-	)
+	programOptions := []tea.ProgramOption{}
+	if !opts.CopyableOutput {
+		programOptions = append(programOptions, tea.WithAltScreen())
+	}
+	program := tea.NewProgram(New(opts), programOptions...)
 	m, err := program.Run()
 	if err != nil {
 		return Result{}, err

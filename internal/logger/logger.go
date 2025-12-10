@@ -20,6 +20,9 @@ type Fields = logrus.Fields
 // DefaultLogPath 默认日志文件路径。
 const DefaultLogPath = "logs/echo-cli.log"
 
+// DefaultConversationLogPath 对话区域日志文件路径。
+const DefaultConversationLogPath = "logs/conversation.log"
+
 var rootLogger = logrus.StandardLogger()
 
 // Configure 设置全局日志格式与 caller 输出。
