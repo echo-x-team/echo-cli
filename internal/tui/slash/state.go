@@ -112,7 +112,7 @@ func (s *State) SyncInput(in Input) {
 		return
 	}
 	s.input = parseInput(in)
-	if !s.input.token.found || s.input.token.blocked || s.input.token.value == "" {
+	if !s.input.token.found || s.input.token.blocked {
 		s.open = false
 		s.matches = nil
 		return

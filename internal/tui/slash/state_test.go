@@ -16,6 +16,17 @@ func TestSyncInputOpensOnSlashToken(t *testing.T) {
 	}
 }
 
+func TestSyncInputOpensOnBareSlash(t *testing.T) {
+	state := NewState(Options{})
+	state.SyncInput(Input{Value: "/", CursorLine: 0, CursorColumn: 1})
+	if !state.Open() {
+		t.Fatalf("expected slash popup to open on bare slash")
+	}
+	if len(state.matches) == 0 {
+		t.Fatalf("expected matches to populate on bare slash")
+	}
+}
+
 func TestHandleKeyTabCompletesBuiltin(t *testing.T) {
 	state := NewState(Options{})
 	state.SyncInput(Input{Value: "/mo", CursorLine: 0, CursorColumn: 3})
