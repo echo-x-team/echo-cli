@@ -1,25 +1,49 @@
-# echo-cli (Go + Bubble Tea) — WIP
+# echo-cli (Go + Bubble Tea)
 
-This is a Go implementation of the echo-cli tool modeled after @echo-rs. It uses Bubble Tea for the TUI and mirrors the MRD features. Current status: **M1 scaffold** (CLI entry, config loader, basic TUI, Echo Team chat without tools).
+Echo Team command-line + TUI client built in Go and Bubble Tea, designed to deliver a capable local agent experience.
+
+## Introduction / 简介 / 紹介
+
+### English
+echo-cli is a Go-based CLI/TUI client for Echo Team. It is built to provide a powerful local agent experience, uses Bubble Tea for the terminal UI, and currently focuses on the M1 scaffold: CLI entry, config loader, basic TUI, and chat without tool execution.
+
+### 中文
+echo-cli 是一个用 Go 编写的 Echo 团队命令行与终端 UI 客户端，旨在提供强大的本地智能体体验，终端界面基于 Bubble Tea。当前处于 M1 脚手架阶段，包含 CLI 入口、配置加载、基础 TUI，以及不含工具执行的聊天功能。
+
+### 日本語
+echo-cli は Go 製の Echo Team 向け CLI/TUI クライアントで、強力なローカルエージェント体験を提供することを目指し、ターミナル UI には Bubble Tea を採用しています。現状は M1 のスキャフォールド段階で、CLI エントリ、設定読み込み、基本的な TUI、ツール実行なしのチャットを提供しています。
+
+## Current Status
+
+- Stage: **M1 scaffold** (CLI entry, config loader, basic TUI, Echo Team chat without tools).
+- Bubble Tea TUI and exec mode share the same session pipeline; tool execution is stubbed until sandbox integration lands.
 
 ## Quickstart
 
+### Launch TUI
+
 ```bash
 cd echo-cli
-go run ./cmd/echo-cli --prompt "hello"
+go run ./cmd/echo-cli --prompt "你好"
 ```
 
-Environment:
+### Exec mode
 
-- `OPENAI_API_KEY` — optional; if unset, the app echoes responses for local testing.
-- Config file (optional): `~/.echo/config.toml` or `--config path`. See `internal/config/config.go` for fields.
-- `default_language` in config chooses the preferred response language (defaults to Chinese when omitted).
+```bash
+go run ./cmd/echo-cli exec --prompt "任务"
+```
+
+## Configuration & Environment
+
+- `OPENAI_API_KEY`: optional; when unset the app echoes responses for local testing.
+- Config file: `~/.echo/config.toml` or override via `--config <path>`. Fields: see `internal/config/config.go`.
+- `default_language` in config picks the preferred response language (defaults to Chinese).
 
 ## CLI (M1+)
 
 - `--config <path>`: override config file (default `~/.echo/config.toml`).
 - `--model <name>`: override model.
-- `--cd <dir>`: set working directory in status bar.
+- `--cd <dir>`: set working directory shown in the status bar.
 - `--prompt "<text>"`: initial user message (also positional).
 - `exec <prompt>`: non-interactive JSONL run with session persistence; supports `--session <id>` / `--resume-last`.
 - Approval/sandbox: honors `sandbox_mode` and `approval_policy` (read-only blocks writes/commands; on-request/untrusted prompts).
@@ -31,15 +55,15 @@ Environment:
 
 ## Code layout
 
--- `cmd/echo-cli`: CLI entry.
--- `internal/config`: config loading/CLI overrides.
--- `internal/agent`: agent loop + model abstraction (including Echo Team client with streaming support).
--- `internal/tui`: Bubble Tea UI (transcript + composer + status bar + @ search + slash commands + approvals + session picker).
--- `internal/policy`: sandbox/approval gating.
--- `internal/tools`: shell + patch helpers (sandbox plumbing stubbed).
--- `internal/search`: file search helper for `@` picker.
--- `internal/instructions`: AGENTS.md discovery for system prompts.
--- `internal/session`: session storage/resume for exec/TUI.
+- `cmd/echo-cli`: CLI entry.
+- `internal/config`: config loading/CLI overrides.
+- `internal/agent`: agent loop + model abstraction (including Echo Team client with streaming support).
+- `internal/tui`: Bubble Tea UI (transcript + composer + status bar + @ search + slash commands + approvals + session picker).
+- `internal/policy`: sandbox/approval gating.
+- `internal/tools`: shell + patch helpers (sandbox plumbing stubbed).
+- `internal/search`: file search helper for `@` picker.
+- `internal/instructions`: AGENTS.md discovery for system prompts.
+- `internal/session`: session storage/resume for exec/TUI.
 
 ## Roadmap
 

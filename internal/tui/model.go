@@ -1076,13 +1076,7 @@ func (m *Model) copyConversation() {
 }
 
 func (m *Model) statusLine(width int) string {
-	parts := []string{
-		fmt.Sprintf("Model: %s", m.modelName),
-		fmt.Sprintf("Sandbox: %s", m.sandbox),
-	}
-	if m.workdir != "" {
-		parts = append(parts, fmt.Sprintf("Dir: %s", m.workdir))
-	}
+	parts := []string{}
 	if m.pending {
 		elapsed := ""
 		if !m.pendingSince.IsZero() {
