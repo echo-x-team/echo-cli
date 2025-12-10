@@ -188,6 +188,21 @@ func (v *HighPerformanceViewport) PercentScrolled() int {
 	return int(float64(v.YOffset) / float64(maxOffset) * 100.0)
 }
 
+// ContentOverflow 表示内容高度是否超过视口。
+func (v *HighPerformanceViewport) ContentOverflow() bool {
+	if v == nil {
+		return false
+	}
+	contentHeight := v.lastContentHeight
+	if contentHeight == 0 {
+		contentHeight = len(v.lastLines)
+	}
+	if v.Height <= 0 {
+		return false
+	}
+	return contentHeight > v.Height
+}
+
 // FollowingBottom 表示当前是否维持“贴底”滚动。
 func (v *HighPerformanceViewport) FollowingBottom() bool {
 	if v == nil {

@@ -142,6 +142,7 @@ type Model struct {
 	pendingSince             time.Time
 	slash                    *slash.State
 	reviewMode               bool
+	chromeCollapsed          bool
 	conversationLog          *logger.LogEntry
 	lastConversationSnapshot string
 }
@@ -354,6 +355,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.copyConversation()
 			return m.finish(cmds...)
 		}
+		if msg.String() == "ctrl+t" {
+			if cmd := m.toggleChrome(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m.finish(cmds...)
+		}
 		if m.pickingSession {
 			var cmd tea.Cmd
 			m.sessions, cmd = m.sessions.Update(msg)
@@ -490,8 +497,8 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
-	quick := renderQuickHelp(m.width)
+	header := m.headerSection(m.width)
+	quick := m.quickHelpSection(m.width)
 	history := renderConversation(m.viewport.View(), m.conversationWidth())
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := m.statusLine(m.width)
@@ -547,6 +554,20 @@ func (m *Model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
 	}
 	return content
+}
+
+func (m *Model) headerSection(width int) string {
+	if m.chromeCollapsed {
+		return renderSessionBanner(m.modelName, m.reasoning, m.workdir, width)
+	}
+	return renderSessionCard(m.modelName, m.reasoning, m.workdir, width)
+}
+
+func (m *Model) quickHelpSection(width int) string {
+	if m.chromeCollapsed {
+		return ""
+	}
+	return renderQuickHelp(width)
 }
 
 // History returns a copy of the chat history.
@@ -1000,8 +1021,8 @@ func (m *Model) conversationHeight(width int) int {
 		return 12
 	}
 
-	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, width)
-	quick := renderQuickHelp(width)
+	header := m.headerSection(width)
+	quick := m.quickHelpSection(width)
 	status := m.statusLine(width)
 	queue := renderQueuedPreview(m.queuedMessages, m.pending, width)
 	composer := renderPane("Prompt", m.textarea.View(), width, m.textarea.Height())
@@ -1098,7 +1119,14 @@ func (m *Model) statusLine(width int) string {
 	if m.pendingApprove != "" {
 		parts = append(parts, "Approval pending")
 	}
-	parts = append(parts, "Scroll:PgUp/PgDn")
+	scrollLabel := "Scroll:PgUp/PgDn"
+	if m.viewport.ContentOverflow() {
+		scrollLabel = fmt.Sprintf("Scroll:%3d%%", m.viewport.PercentScrolled())
+		if !m.viewport.FollowingBottom() {
+			scrollLabel += " (锁定视图)"
+		}
+	}
+	parts = append(parts, scrollLabel)
 	if m.err != nil {
 		parts = append(parts, fmt.Sprintf("Error: %v", m.err))
 	}
@@ -1148,6 +1176,26 @@ func renderSessionCard(model, reasoning, workdir string, width int) string {
 		Render(strings.Join(lines, "\n"))
 }
 
+func renderSessionBanner(model, reasoning, workdir string, width int) string {
+	modelText := model
+	if reasoning != "" {
+		modelText = fmt.Sprintf("%s %s", model, reasoning)
+	}
+	parts := []string{
+		fmt.Sprintf("Echo %s", tuiVersion),
+		fmt.Sprintf("model %s", modelText),
+	}
+	if workdir != "" {
+		parts = append(parts, workdir)
+	}
+	parts = append(parts, "Ctrl+T 折叠/展开顶部")
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7D7A85")).
+		Padding(0, 1).
+		Width(maxInt(40, width)).
+		Render(strings.Join(parts, " • "))
+}
+
 func renderConversation(body string, width int) string {
 	style := lipgloss.NewStyle().
 		Padding(0, 1).
@@ -1195,7 +1243,7 @@ func renderQuickHelp(width int) string {
 }
 
 func renderHints(width int) string {
-	hint := "Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
+	hint := "Enter 发送 • Alt+Enter 换行 • Ctrl+T 折叠顶部 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 1).
@@ -1498,9 +1546,14 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		m.refreshTranscript()
 		return nil
 	case slash.CommandCompact:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "compact command not implemented yet."})
+		cmd := m.toggleChrome()
+		if m.chromeCollapsed {
+			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "已折叠顶部信息，留出更多会话空间。"})
+		} else {
+			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "已恢复完整顶部信息。"})
+		}
 		m.refreshTranscript()
-		return nil
+		return cmd
 	case slash.CommandUndo:
 		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "undo is not available in this build."})
 		m.refreshTranscript()
@@ -1523,6 +1576,21 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+func (m *Model) toggleChrome() tea.Cmd {
+	m.chromeCollapsed = !m.chromeCollapsed
+	state := "展开顶部信息"
+	if m.chromeCollapsed {
+		state = "折叠顶部信息"
+	}
+	m.logEvent("layout", state)
+	cmds := m.resize(m.width, m.height)
+	m.refreshTranscript()
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) resetSession() {

@@ -43,3 +43,15 @@ func TestHighPerformanceViewportScrollLineDown(t *testing.T) {
 		}
 	})
 }
+
+func TestContentOverflow(t *testing.T) {
+	vp := NewHighPerformanceViewport(8, 2)
+	_ = vp.SetLines([]string{"a", "b"})
+	if vp.ContentOverflow() {
+		t.Fatalf("expected no overflow when content fits")
+	}
+	_ = vp.SetLines([]string{"a", "b", "c"})
+	if !vp.ContentOverflow() {
+		t.Fatalf("expected overflow when content exceeds viewport height")
+	}
+}

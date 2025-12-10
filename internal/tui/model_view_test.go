@@ -30,3 +30,16 @@ func TestFlushTranscriptUsesViewportHeight(t *testing.T) {
 		t.Fatalf("viewport height = %d, expected %d", m.viewport.Height, expectedHeight)
 	}
 }
+
+func TestConversationHeightExpandsWhenChromeCollapsed(t *testing.T) {
+	m := New(Options{})
+	m.resize(80, 24)
+
+	expanded := m.conversationHeight(m.conversationWidth())
+	m.chromeCollapsed = true
+	collapsed := m.conversationHeight(m.conversationWidth())
+
+	if collapsed <= expanded {
+		t.Fatalf("collapsed height should be greater than expanded height (got %d vs %d)", collapsed, expanded)
+	}
+}
