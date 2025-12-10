@@ -492,7 +492,7 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
 	quick := renderQuickHelp(m.width)
-	history := renderConversation(m.viewport.View(), m.width)
+	history := renderConversation(m.viewport.View(), m.conversationWidth())
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := m.statusLine(m.width)
 	queue := renderQueuedPreview(m.queuedMessages, m.pending, m.width)
@@ -837,9 +837,14 @@ func (m *Model) resize(width, height int) []tea.Cmd {
 	m.width = width
 	m.height = height
 
+	convWidth := m.conversationWidth()
+	convHeight := m.conversationHeight(convWidth)
+
 	if width > 0 {
-		m.viewport.Width = width
 		m.textarea.SetWidth(width)
+	}
+	if resizeCmd := m.viewport.Resize(convWidth, convHeight); resizeCmd != nil {
+		cmds = append(cmds, resizeCmd)
 	}
 	m.eventsPane.SetContent(renderEvents(m.events, m.eventsPane.Width, m.eventsPane.Height))
 	m.refreshTranscript()
@@ -963,14 +968,8 @@ func (m *Model) flushTranscript() tea.Cmd {
 	lines, plain := m.renderTranscriptLines()
 	m.logConversationSnapshot(plain)
 	m.transcriptDirty = false
-	width := m.width
-	if width <= 0 {
-		width = m.viewport.Width
-	}
-	if width <= 0 {
-		width = 80
-	}
-	height := len(lines)
+	width := m.conversationWidth()
+	height := m.conversationHeight(width)
 	resizeCmd := m.viewport.Resize(width, height)
 	setCmd := m.viewport.SetLines(lines)
 	if resizeCmd == nil {
@@ -980,6 +979,49 @@ func (m *Model) flushTranscript() tea.Cmd {
 		return resizeCmd
 	}
 	return tea.Batch(resizeCmd, setCmd)
+}
+
+func (m *Model) conversationWidth() int {
+	width := m.width
+	if width <= 0 {
+		width = m.viewport.Width
+	}
+	if width <= 0 {
+		width = 80
+	}
+	return width
+}
+
+func (m *Model) conversationHeight(width int) int {
+	if m.height <= 0 {
+		if m.viewport.Height > 0 {
+			return m.viewport.Height
+		}
+		return 12
+	}
+
+	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, width)
+	quick := renderQuickHelp(width)
+	status := m.statusLine(width)
+	queue := renderQueuedPreview(m.queuedMessages, m.pending, width)
+	composer := renderPane("Prompt", m.textarea.View(), width, m.textarea.Height())
+	hints := renderHints(width)
+
+	bottomParts := []string{}
+	if status != "" {
+		bottomParts = append(bottomParts, status)
+	}
+	if queue != "" {
+		bottomParts = append(bottomParts, queue)
+	}
+	bottomParts = append(bottomParts, composer, hints)
+
+	reservedHeight := lipgloss.Height(header) + lipgloss.Height(quick) + lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, bottomParts...))
+	available := m.height - reservedHeight - conversationMarginBottom // renderConversation has a bottom margin
+	if available < 3 {
+		available = 3
+	}
+	return available
 }
 
 func (m *Model) renderTranscriptLines() ([]string, []string) {
@@ -1062,7 +1104,7 @@ func (m *Model) statusLine(width int) string {
 	if m.pendingApprove != "" {
 		parts = append(parts, "Approval pending")
 	}
-	parts = append(parts, "Scroll:terminal")
+	parts = append(parts, "Scroll:PgUp/PgDn")
 	if m.err != nil {
 		parts = append(parts, fmt.Sprintf("Error: %v", m.err))
 	}
@@ -1088,7 +1130,10 @@ func renderHeader(model, sandbox, workdir string, width int) string {
 		Render(lipgloss.JoinHorizontal(lipgloss.Top, left, lipgloss.NewStyle().PaddingLeft(2).Render(right)))
 }
 
-const tuiVersion = "v0.65.0"
+const (
+	tuiVersion               = "v0.65.0"
+	conversationMarginBottom = 1
+)
 
 func renderSessionCard(model, reasoning, workdir string, width int) string {
 	modelText := model
@@ -1112,7 +1157,7 @@ func renderSessionCard(model, reasoning, workdir string, width int) string {
 func renderConversation(body string, width int) string {
 	style := lipgloss.NewStyle().
 		Padding(0, 1).
-		MarginBottom(1)
+		MarginBottom(conversationMarginBottom)
 	if width > 0 {
 		style = style.Width(maxInt(20, width))
 	}
