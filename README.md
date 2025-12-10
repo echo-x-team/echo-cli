@@ -24,6 +24,11 @@ Environment:
 - `exec <prompt>`: non-interactive JSONL run with session persistence; supports `--session <id>` / `--resume-last`.
 - Approval/sandbox: honors `sandbox_mode` and `approval_policy` (read-only blocks writes/commands; on-request/untrusted prompts).
 
+## AGENTS.md bootstrap
+
+- Run `/init` in the TUI to ask the agent to scan the repo and draft `AGENTS.md` following the agents.md convention.
+- If `AGENTS.md` already exists in the working directory, the command skips without touching the file and posts an info message instead.
+
 ## Code layout
 
 -- `cmd/echo-cli`: CLI entry.

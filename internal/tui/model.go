@@ -914,7 +914,7 @@ func renderTip(width int) string {
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 2).
 		Width(maxInt(20, width)).
-		Render("Tip: Use /feedback to send logs to the maintainers when something looks off.")
+		Render("Tip: Run /init to scaffold AGENTS.md for this repo; /feedback shares logs when something looks off.")
 }
 
 func renderHints(width int) string {
@@ -1104,9 +1104,7 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		m.refreshTranscript()
 		return nil
 	case "/init":
-		m.messages = nil
-		m.refreshTranscript()
-		return nil
+		return m.handleInitCommand()
 	case "/resume":
 		rec, err := session.Last()
 		if err != nil {
