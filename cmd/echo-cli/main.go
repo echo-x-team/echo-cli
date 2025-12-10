@@ -21,6 +21,7 @@ import (
 	"echo-cli/internal/repl"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/session"
+	"echo-cli/internal/tools"
 	"echo-cli/internal/tools/dispatcher"
 	toolengine "echo-cli/internal/tools/engine"
 	"github.com/google/uuid"
@@ -32,6 +33,11 @@ func main() {
 		log.Warnf("failed to initialize log file: %v", err)
 	} else {
 		defer logFile.Close()
+	}
+	if toolsCloser, _, err := tools.SetupToolsLog(tools.DefaultToolsLogPath); err != nil {
+		log.Warnf("failed to initialize tools log (%s): %v", tools.DefaultToolsLogPath, err)
+	} else if toolsCloser != nil {
+		defer toolsCloser.Close()
 	}
 
 	root, rest, err := parseRootArgs(os.Args[1:])
