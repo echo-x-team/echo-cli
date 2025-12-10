@@ -1068,6 +1068,11 @@ func (m *Model) statusLine(width int) string {
 	if m.pendingApprove != "" {
 		parts = append(parts, "Approval pending")
 	}
+	scroll := "bottom"
+	if !m.viewport.FollowingBottom() {
+		scroll = fmt.Sprintf("%d%%", m.viewport.PercentScrolled())
+	}
+	parts = append(parts, fmt.Sprintf("Scroll:%s", scroll))
 	if m.err != nil {
 		parts = append(parts, fmt.Sprintf("Error: %v", m.err))
 	}
@@ -1151,7 +1156,7 @@ func renderQuickHelp(width int) string {
 }
 
 func renderHints(width int) string {
-	hint := "↑/↓ 滚动 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
+	hint := "↑/↓ 滚动 • PgUp/PgDn/Space 翻页 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 1).
@@ -1203,6 +1208,8 @@ func (m *Model) handleScrollKeys(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case tea.KeyPgUp:
 		return m.viewport.ScrollPageUp(), true
 	case tea.KeyPgDown:
+		return m.viewport.ScrollPageDown(), true
+	case tea.KeySpace:
 		return m.viewport.ScrollPageDown(), true
 	case tea.KeyHome:
 		return m.viewport.GotoTopCmd(), true

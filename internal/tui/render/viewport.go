@@ -11,7 +11,9 @@ import (
 // HighPerformanceViewport 包装 bubbles viewport，提供 diff 感知与滚动命令生成。
 type HighPerformanceViewport struct {
 	viewport.Model
-	lastLines []string
+	lastLines         []string
+	lastContentHeight int
+	followBottom      bool
 }
 
 // NewHighPerformanceViewport 创建视口；Bubble Tea v1 推荐默认渲染器，因此不启用
@@ -33,6 +35,7 @@ func (v *HighPerformanceViewport) Resize(width, height int) tea.Cmd {
 	}
 	v.Width = width
 	v.Height = height
+	v.clampOffset(v.lastContentHeight)
 	if widthChanged {
 		v.Invalidate()
 	}
@@ -54,6 +57,12 @@ func (v *HighPerformanceViewport) HandleUpdate(msg tea.Msg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	v.Model, cmd = v.Model.Update(msg)
+	// Track whether we are currently at the bottom to decide follow-bottom behavior.
+	if v.AtBottom() {
+		v.followBottom = true
+	} else if v.YOffset > 0 {
+		v.followBottom = false
+	}
 	return cmd
 }
 
@@ -66,12 +75,19 @@ func (v *HighPerformanceViewport) SetLines(lines []string) tea.Cmd {
 		return nil
 	}
 
-	stickToBottom := v.AtBottom()
+	contentHeight := len(lines)
+	// Stick to bottom if我们本就在底部，或内容尚不足一屏。
+	stickToBottom := v.followBottom || v.AtBottom() || contentHeight <= v.Height
 	v.lastLines = append([]string(nil), lines...)
+	v.lastContentHeight = contentHeight
 
 	v.SetContent(strings.Join(lines, "\n"))
+	v.clampOffset(contentHeight)
 	if stickToBottom {
+		v.followBottom = true
 		v.GotoBottom()
+	} else {
+		v.followBottom = false
 	}
 	return nil
 }
@@ -81,7 +97,11 @@ func (v *HighPerformanceViewport) ScrollPageDown() tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = false
 	v.PageDown()
+	if v.AtBottom() {
+		v.followBottom = true
+	}
 	return nil
 }
 
@@ -90,6 +110,7 @@ func (v *HighPerformanceViewport) ScrollPageUp() tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = false
 	v.PageUp()
 	return nil
 }
@@ -99,7 +120,11 @@ func (v *HighPerformanceViewport) ScrollLineDown(n int) tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = false
 	v.ScrollDown(n)
+	if v.AtBottom() {
+		v.followBottom = true
+	}
 	return nil
 }
 
@@ -108,6 +133,7 @@ func (v *HighPerformanceViewport) ScrollLineUp(n int) tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = false
 	v.ScrollUp(n)
 	return nil
 }
@@ -117,6 +143,7 @@ func (v *HighPerformanceViewport) GotoTopCmd() tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = false
 	v.GotoTop()
 	return nil
 }
@@ -126,6 +153,7 @@ func (v *HighPerformanceViewport) GotoBottomCmd() tea.Cmd {
 	if v == nil {
 		return nil
 	}
+	v.followBottom = true
 	v.GotoBottom()
 	return nil
 }
@@ -136,4 +164,54 @@ func (v *HighPerformanceViewport) Invalidate() {
 		return
 	}
 	v.lastLines = nil
+}
+
+// PercentScrolled 返回可视窗口在内容中的滚动百分比。
+func (v *HighPerformanceViewport) PercentScrolled() int {
+	if v == nil {
+		return 100
+	}
+	contentHeight := v.lastContentHeight
+	if contentHeight == 0 {
+		contentHeight = len(v.lastLines)
+	}
+	if contentHeight <= 0 || v.Height == 0 || contentHeight <= v.Height {
+		return 100
+	}
+	maxOffset := contentHeight - v.Height
+	if maxOffset <= 0 {
+		return 100
+	}
+	if v.YOffset >= maxOffset {
+		return 100
+	}
+	return int(float64(v.YOffset) / float64(maxOffset) * 100.0)
+}
+
+// FollowingBottom 表示当前是否维持“贴底”滚动。
+func (v *HighPerformanceViewport) FollowingBottom() bool {
+	if v == nil {
+		return true
+	}
+	if v.lastContentHeight <= v.Height {
+		return true
+	}
+	return v.followBottom
+}
+
+func (v *HighPerformanceViewport) clampOffset(contentHeight int) {
+	if v == nil {
+		return
+	}
+	if contentHeight <= 0 || v.Height <= 0 {
+		v.YOffset = 0
+		return
+	}
+	maxYOffset := contentHeight - v.Height
+	if maxYOffset < 0 {
+		maxYOffset = 0
+	}
+	if v.YOffset > maxYOffset {
+		v.YOffset = maxYOffset
+	}
 }
