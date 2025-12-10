@@ -173,130 +173,107 @@ func (e *Engine) handleInterrupt(ctx context.Context, submission events.Submissi
 //  3. 考虑实现响应内容的缓存机制
 //  4. 可以优化内存使用，避免历史记录无限增长
 func (e *Engine) runTask(ctx context.Context, submission events.Submission, state TurnState, emit events.EventPublisher) error {
-	// seq 用于跟踪输出流序列号，确保客户端能够正确排序和显示内容
 	seq := 0
-	// turnCtx 包含当前回合的对话上下文和历史记录
 	turnCtx := state.Context
-	// 订阅工具执行事件，用于异步接收工具执行结果
-	// toolEvents 是一个通道，用于接收工具执行的事件通知
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
-	// 确保在函数退出时清理资源，避免 goroutine 泄露
 	defer stopTools()
+	publishedMarkers := map[string]struct{}{}
 
-	// 主循环：持续进行对话，直到不再有工具调用
-	// 这个循环实现了类似 ReAct 模式的推理-行动循环
 	for {
-		// builder 用于积累 LLM 返回的完整响应内容
-		var builder strings.Builder
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-		// 构建发送给 LLM 的提示词，包含系统提示、历史对话和当前用户输入
 		prompt := turnCtx.BuildPrompt()
+		logPrompt(submission, prompt)
 
-		// 记录发送给 LLM 的完整提示词，便于调试和日志分析
-		if encoded, err := json.Marshal(prompt); err == nil {
-			log.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, string(encoded))
-		} else {
-			log.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
-		}
-		log.Infof("messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
-		for i, msg := range prompt.Messages {
-			log.Infof("message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
-		}
-
-		// 流式调用 LLM，实时接收并处理响应内容
-		// 优点：用户体验更好，可以看到实时的生成过程
-		err := e.streamPrompt(ctx, prompt, func(chunk string) {
-			// 跳过空块，避免发送无意义的事件
-			if chunk == "" {
-				return
-			}
-
-			// 累积完整的响应内容
-			builder.WriteString(chunk)
-
-			// 实时发布输出事件，让前端能够流式显示内容
-			// 注意：这里忽略发布错误，因为我们更关注 LLM 的响应
-			_ = emit.Publish(ctx, events.Event{
-				Type:         events.EventAgentOutput,
-				SubmissionID: submission.ID,        // 关联到原始提交
-				SessionID:    submission.SessionID, // 关联到会话
-				Timestamp:    time.Now(),
-				Payload: events.AgentOutput{
-					Content:  chunk, // 当前响应块
-					Sequence: seq,   // 序列号，用于排序
-				},
-				Metadata: submission.Metadata, // 保留原始元数据
-			})
-
-			// 递增序列号，为下一个块做准备
-			seq++
-		})
-
-		// 如果 LLM 调用出错，直接返回错误
-		// 可能的错误：网络问题、API限制、模型不可用等
+		full, markers, err := e.runTurnOnce(ctx, submission, prompt, emit, &seq)
 		if err != nil {
 			return err
 		}
 
-		// 获取 LLM 返回的完整响应内容
-		full := builder.String()
+		e.dispatchToolMarkers(markers, publishedMarkers)
 
-		// 如果有内容，将其添加到对话历史中
-		// 这样下一次 LLM 调用时能够看到本轮的响应
 		if full != "" {
-			turnCtx.History = append(turnCtx.History, agent.Message{Role: agent.RoleAssistant, Content: full})
-			// 同时更新全局上下文管理器，保持状态同步
+			assistant := agent.Message{Role: agent.RoleAssistant, Content: full}
+			turnCtx.History = append(turnCtx.History, assistant)
 			e.contexts.AppendAssistant(submission.SessionID, full)
 		}
 
-		// 解析响应中的工具调用标记
-		// 工具调用格式类似于：<function_calls>...<function_calls>
-		// 如果检测到工具调用，需要执行工具并收集结果
-		markers, _ := tools.ParseMarkers(full)
-
-		// 如果没有工具调用，说明对话已完成
 		if len(markers) == 0 {
-			// 发送最终输出事件，标记响应结束
 			_ = emit.Publish(ctx, events.Event{
 				Type:         events.EventAgentOutput,
 				SubmissionID: submission.ID,
 				SessionID:    submission.SessionID,
 				Timestamp:    time.Now(),
 				Payload: events.AgentOutput{
-					Content:  full, // 完整的最终响应
-					Final:    true, // 标记为最终输出
-					Sequence: seq,  // 最后的序列号
+					Content:  full,
+					Final:    true,
+					Sequence: seq,
 				},
 				Metadata: submission.Metadata,
 			})
-			// 对话完成，退出循环
 			return nil
 		}
 
-		// 等待并收集所有工具的执行结果
-		// 这是一个阻塞操作，会等待所有工具完成或超时
 		results, err := e.collectToolResults(ctx, markers, toolEvents)
 		if err != nil {
-			// 工具执行失败，返回错误
-			// 可能的原因：工具超时、执行错误、工具不存在等
 			return err
 		}
 
-		// 将工具执行结果格式化为消息格式
-		// 这样可以将工具结果作为新的用户消息发送给 LLM
 		toolMsgs := formatToolResults(results)
-
-		// 如果有工具结果，将其添加到对话历史
-		// 这让 LLM 能够基于工具结果进行下一步推理
 		if len(toolMsgs) > 0 {
 			turnCtx.History = append(turnCtx.History, toolMsgs...)
-			// 更新全局上下文管理器
 			e.contexts.AppendMessages(submission.SessionID, toolMsgs)
-
-			// 继续下一轮循环，让 LLM 基于工具结果生成新的响应
-			// 这实现了类似 ReAct 的推理模式：思考 -> 行动 -> 观察 -> 思考
 		}
 	}
+}
+
+func logPrompt(submission events.Submission, prompt Prompt) {
+	if encoded, err := json.Marshal(prompt); err == nil {
+		log.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, string(encoded))
+	} else {
+		log.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
+	}
+	log.Infof("messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
+	for i, msg := range prompt.Messages {
+		log.Infof("message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+	}
+}
+
+// runTurnOnce 对齐 Codex 的“模型流 → 事件 → 工具调度”流程：流式收集输出、发布增量事件并返回工具标记。
+func (e *Engine) runTurnOnce(ctx context.Context, submission events.Submission, prompt Prompt, emit events.EventPublisher, seq *int) (string, []tools.ToolCallMarker, error) {
+	var builder strings.Builder
+
+	err := e.streamPrompt(ctx, prompt, func(chunk string) {
+		if chunk == "" {
+			return
+		}
+		builder.WriteString(chunk)
+
+		_ = emit.Publish(ctx, events.Event{
+			Type:         events.EventAgentOutput,
+			SubmissionID: submission.ID,
+			SessionID:    submission.SessionID,
+			Timestamp:    time.Now(),
+			Payload: events.AgentOutput{
+				Content:  chunk,
+				Sequence: *seq,
+			},
+			Metadata: submission.Metadata,
+		})
+		*seq++
+	})
+	if err != nil {
+		return "", nil, err
+	}
+
+	full := builder.String()
+	markers, parseErr := tools.ParseMarkers(full)
+	if parseErr != nil {
+		log.Warnf("parse markers session=%s submission=%s err=%v", submission.SessionID, submission.ID, parseErr)
+	}
+	return full, markers, nil
 }
 
 func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(string)) error {
@@ -312,14 +289,8 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(s
 			llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
-		chunkIdx := 0
 		err := e.client.Stream(ctxRun, messages, model, func(chunk string) {
 			onChunk(chunk)
-			e.publishToolMarkers(chunk)
-			if chunk == "" {
-				return
-			}
-			chunkIdx++
 		})
 		cancel()
 		if err == nil {
@@ -488,15 +459,20 @@ func (e *Engine) collectToolResults(ctx context.Context, markers []tools.ToolCal
 	return ordered, nil
 }
 
-func (e *Engine) publishToolMarkers(chunk string) {
-	if e.bus == nil {
-		return
-	}
-	markers, err := tools.ParseMarkers(chunk)
-	if err != nil || len(markers) == 0 {
+func (e *Engine) dispatchToolMarkers(markers []tools.ToolCallMarker, seen map[string]struct{}) {
+	if e.bus == nil || len(markers) == 0 {
 		return
 	}
 	for _, marker := range markers {
+		if marker.Tool == "" || marker.ID == "" {
+			continue
+		}
+		if seen != nil {
+			if _, ok := seen[marker.ID]; ok {
+				continue
+			}
+			seen[marker.ID] = struct{}{}
+		}
 		e.bus.Publish(marker)
 	}
 }

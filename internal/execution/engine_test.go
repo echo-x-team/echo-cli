@@ -256,6 +256,94 @@ done:
 	}
 }
 
+func TestEngineDispatchesMarkersAfterFullResponse(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	bus := events.NewBus()
+	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 2})
+	client := &splitToolLoopModelClient{}
+	engine := NewEngine(Options{
+		Manager:     manager,
+		Client:      client,
+		Bus:         bus,
+		Defaults:    SessionDefaults{Model: "gpt-test", System: "system"},
+		ToolTimeout: time.Second,
+	})
+
+	engine.Start(ctx)
+	defer engine.Close()
+
+	// Simulate dispatcher sending tool results after receiving the marker.
+	go func() {
+		sub := bus.Subscribe()
+		for evt := range sub {
+			marker, ok := evt.(tools.ToolCallMarker)
+			if !ok || marker.ID != "split-1" {
+				continue
+			}
+			bus.Publish(tools.ToolEvent{
+				Type: "item.completed",
+				Result: tools.ToolResult{
+					ID:     marker.ID,
+					Kind:   tools.ToolCommand,
+					Status: "completed",
+					Output: "tool output",
+				},
+			})
+			return
+		}
+	}()
+
+	eventsCh := engine.Events()
+	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-split"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	var outputs []events.AgentOutput
+	var taskResult events.TaskResult
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for tool loop completion, collected %d outputs", len(outputs))
+		case ev := <-eventsCh:
+			if ev.SubmissionID != subID {
+				continue
+			}
+			switch ev.Type {
+			case events.EventAgentOutput:
+				output, ok := ev.Payload.(events.AgentOutput)
+				if !ok {
+					t.Fatalf("unexpected payload type %#v", ev.Payload)
+				}
+				outputs = append(outputs, output)
+			case events.EventError:
+				t.Fatalf("unexpected error payload: %v", ev.Payload)
+			case events.EventTaskCompleted:
+				if res, ok := ev.Payload.(events.TaskResult); ok {
+					taskResult = res
+				}
+				goto done
+			}
+		}
+	}
+
+done:
+	if taskResult.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", taskResult)
+	}
+	if client.calls < 2 {
+		t.Fatalf("expected multiple model calls with tools, got %d", client.calls)
+	}
+	if len(outputs) == 0 || !outputs[len(outputs)-1].Final {
+		t.Fatalf("expected final agent output, got %+v", outputs)
+	}
+	if outputs[len(outputs)-1].Content != "final after split tool" {
+		t.Fatalf("unexpected final content: %q", outputs[len(outputs)-1].Content)
+	}
+}
+
 type fakeModelClient struct {
 	chunks []string
 }
@@ -318,5 +406,36 @@ func (c *toolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ s
 		return nil
 	}
 	onChunk("final answer after tool")
+	return nil
+}
+
+type splitToolLoopModelClient struct {
+	calls int
+}
+
+func (c *splitToolLoopModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+	return "", nil
+}
+
+func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onChunk func(string)) error {
+	c.calls++
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if c.calls == 1 {
+		chunks := []string{"```tool\n", `{"tool":"command","id":"split-1","args":{"command":"echo hi"}}`, "\n```"}
+		for _, ch := range chunks {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			onChunk(ch)
+		}
+		return nil
+	}
+	onChunk("final after split tool")
 	return nil
 }
