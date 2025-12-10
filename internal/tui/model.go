@@ -492,7 +492,7 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
 	quick := renderQuickHelp(m.width)
-	historyPane := renderPane("Conversation", m.viewport.View(), m.width, m.viewport.Height)
+	history := renderConversation(m.viewport.View(), m.width)
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := m.statusLine(m.width)
 	queue := renderQueuedPreview(m.queuedMessages, m.pending, m.width)
@@ -512,7 +512,7 @@ func (m *Model) View() string {
 	if quick != "" {
 		sections = append(sections, quick)
 	}
-	sections = append(sections, historyPane, bottom)
+	sections = append(sections, history, bottom)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	if m.searching {
@@ -837,32 +837,11 @@ func (m *Model) resize(width, height int) []tea.Cmd {
 	m.width = width
 	m.height = height
 
-	headerHeight := lipgloss.Height(renderSessionCard(m.modelName, m.reasoning, m.workdir, width))
-	quickHelpHeight := lipgloss.Height(renderQuickHelp(width))
-	statusHeight := lipgloss.Height(m.statusLine(width))
-	queueHeight := lipgloss.Height(renderQueuedPreview(m.queuedMessages, m.pending, width))
-	hintsHeight := lipgloss.Height(renderHints(width))
-	composerHeight := m.textarea.Height() + 3 // body + border + title
-
-	historyBlockHeight := height - headerHeight - quickHelpHeight - statusHeight - queueHeight - composerHeight - hintsHeight
-	if historyBlockHeight < 5 {
-		historyBlockHeight = 5
-	}
-	// renderPane adds a border and title (~3 rows), keep body height positive.
-	historyBodyHeight := historyBlockHeight - 3
-	if historyBodyHeight < 3 {
-		historyBodyHeight = 3
-	}
-
 	if width > 0 {
 		m.viewport.Width = width
+		m.textarea.SetWidth(width)
 	}
-	if cmd := m.viewport.Resize(width, historyBodyHeight); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	m.textarea.SetWidth(width)
 	m.eventsPane.SetContent(renderEvents(m.events, m.eventsPane.Width, m.eventsPane.Height))
-	m.viewport.SetYPosition(m.viewportTop())
 	m.refreshTranscript()
 	return cmds
 }
@@ -984,8 +963,23 @@ func (m *Model) flushTranscript() tea.Cmd {
 	lines, plain := m.renderTranscriptLines()
 	m.logConversationSnapshot(plain)
 	m.transcriptDirty = false
-	m.viewport.SetYPosition(m.viewportTop())
-	return m.viewport.SetLines(lines)
+	width := m.width
+	if width <= 0 {
+		width = m.viewport.Width
+	}
+	if width <= 0 {
+		width = 80
+	}
+	height := len(lines)
+	resizeCmd := m.viewport.Resize(width, height)
+	setCmd := m.viewport.SetLines(lines)
+	if resizeCmd == nil {
+		return setCmd
+	}
+	if setCmd == nil {
+		return resizeCmd
+	}
+	return tea.Batch(resizeCmd, setCmd)
 }
 
 func (m *Model) renderTranscriptLines() ([]string, []string) {
@@ -1068,11 +1062,7 @@ func (m *Model) statusLine(width int) string {
 	if m.pendingApprove != "" {
 		parts = append(parts, "Approval pending")
 	}
-	scroll := "bottom"
-	if !m.viewport.FollowingBottom() {
-		scroll = fmt.Sprintf("%d%%", m.viewport.PercentScrolled())
-	}
-	parts = append(parts, fmt.Sprintf("Scroll:%s", scroll))
+	parts = append(parts, "Scroll:terminal")
 	if m.err != nil {
 		parts = append(parts, fmt.Sprintf("Error: %v", m.err))
 	}
@@ -1119,6 +1109,16 @@ func renderSessionCard(model, reasoning, workdir string, width int) string {
 		Render(strings.Join(lines, "\n"))
 }
 
+func renderConversation(body string, width int) string {
+	style := lipgloss.NewStyle().
+		Padding(0, 1).
+		MarginBottom(1)
+	if width > 0 {
+		style = style.Width(maxInt(20, width))
+	}
+	return style.Render(strings.TrimRight(body, "\n"))
+}
+
 func renderPane(title string, body string, width int, height int) string {
 	titleText := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render(title)
 	style := lipgloss.NewStyle().
@@ -1156,7 +1156,7 @@ func renderQuickHelp(width int) string {
 }
 
 func renderHints(width int) string {
-	hint := "↑/↓ 滚动 • PgUp/PgDn/Space 翻页 • Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
+	hint := "Enter 发送 • Alt+Enter 换行 • Ctrl+C 退出 • Ctrl+Y 复制对话 • @ 搜索文件 • ? 帮助 • /sessions 恢复会话"
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D7A85")).
 		Padding(0, 1).
@@ -1191,16 +1191,6 @@ func renderQueuedPreview(queue []string, pending bool, width int) string {
 		Padding(0, 1).
 		Width(maxInt(20, width)).
 		Render(strings.Join(lines, "\n"))
-}
-
-func (m *Model) viewportTop() int {
-	header := renderSessionCard(m.modelName, m.reasoning, m.workdir, m.width)
-	quick := renderQuickHelp(m.width)
-	top := lipgloss.Height(header) + lipgloss.Height(quick)
-	if top < 0 {
-		return 0
-	}
-	return top
 }
 
 func (m *Model) handleScrollKeys(msg tea.KeyMsg) (tea.Cmd, bool) {
