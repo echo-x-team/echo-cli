@@ -144,3 +144,66 @@ func TestManagerUserInputFlow(t *testing.T) {
 		t.Fatalf("unexpected outputs %+v", outputs)
 	}
 }
+
+func TestSubmitUserInputMetadata(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mgr := NewManager(ManagerConfig{SubmissionBuffer: 4, EventBuffer: 8, Workers: 1})
+	defer mgr.Close()
+
+	metaCh := make(chan map[string]string, 1)
+	mgr.RegisterHandler(OperationUserInput, HandlerFunc(func(ctx context.Context, submission Submission, emit EventPublisher) error {
+		copyMeta := map[string]string{}
+		for k, v := range submission.Metadata {
+			copyMeta[k] = v
+		}
+		metaCh <- copyMeta
+		return nil
+	}))
+
+	mgr.Start(ctx)
+
+	meta := map[string]string{"target": "@internal/execution"}
+	events := mgr.Subscribe()
+	id, err := mgr.SubmitUserInput(ctx, []InputMessage{{Role: "user", Content: "with-meta"}}, InputContext{
+		SessionID: "sess-meta",
+		Metadata:  meta,
+	})
+	if err != nil {
+		t.Fatalf("submit user input with metadata: %v", err)
+	}
+
+	seenStart := false
+	seenComplete := false
+	var seenMeta map[string]string
+
+	for !seenComplete {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for metadata events")
+		case ev := <-events:
+			if ev.SubmissionID != id {
+				continue
+			}
+			if ev.Metadata != nil {
+				seenMeta = ev.Metadata
+			}
+			switch ev.Type {
+			case EventTaskStarted:
+				seenStart = true
+			case EventTaskCompleted:
+				seenComplete = true
+			}
+		case submissionMeta := <-metaCh:
+			seenMeta = submissionMeta
+		}
+	}
+
+	if !seenStart {
+		t.Fatalf("expected task start event with metadata")
+	}
+	if seenMeta["target"] != "@internal/execution" {
+		t.Fatalf("unexpected metadata: %+v", seenMeta)
+	}
+}

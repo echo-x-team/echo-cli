@@ -150,13 +150,14 @@ func (m *Manager) SubmitUserInput(ctx context.Context, items []InputMessage, inp
 	if len(items) == 0 {
 		return "", errors.New("empty user input items")
 	}
+	meta := cloneMetadata(inputCtx.Metadata)
 	sub := Submission{
 		ID:        uuid.NewString(),
 		Operation: Operation{Kind: OperationUserInput, UserInput: &UserInputOperation{Items: items, Context: inputCtx}},
 		Timestamp: time.Now(),
 		Priority:  PriorityNormal,
 		SessionID: inputCtx.SessionID,
-		Metadata:  map[string]string{},
+		Metadata:  meta,
 	}
 	return m.Submit(ctx, sub)
 }
@@ -263,4 +264,15 @@ func (m *Manager) worker(ctx context.Context) {
 			Metadata:     sub.Metadata,
 		})
 	}
+}
+
+func cloneMetadata(meta map[string]string) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	return out
 }

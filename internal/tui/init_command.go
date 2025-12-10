@@ -61,7 +61,12 @@ func (m *Model) handleInitCommand() tea.Cmd {
 	m.refreshTranscript()
 	m.pending = true
 	m.setComposerHeight()
-	return m.startStream(prompt)
+	ctx := m.defaultInputContext()
+	if ctx.Metadata == nil {
+		ctx.Metadata = map[string]string{}
+	}
+	ctx.Metadata["target"] = "@internal/execution"
+	return m.startSubmission(prompt, ctx)
 }
 
 func buildInitPrompt(workdir string) (string, error) {

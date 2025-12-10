@@ -586,6 +586,10 @@ func (m *Model) UpdateAction() string {
 }
 
 func (m *Model) startStream(input string) tea.Cmd {
+	return m.startSubmission(input, m.defaultInputContext())
+}
+
+func (m *Model) startSubmission(input string, inputCtx events.InputContext) tea.Cmd {
 	if m.gateway == nil {
 		m.err = fmt.Errorf("submission gateway not configured")
 		m.pending = false
@@ -593,18 +597,18 @@ func (m *Model) startStream(input string) tea.Cmd {
 		return nil
 	}
 	if m.resumeSessionID == "" {
-		m.resumeSessionID = uuid.NewString()
+		if inputCtx.SessionID != "" {
+			m.resumeSessionID = inputCtx.SessionID
+		} else {
+			m.resumeSessionID = uuid.NewString()
+		}
 	}
-	subCtx := events.InputContext{
-		SessionID:       m.resumeSessionID,
-		Model:           m.modelName,
-		Language:        m.language,
-		ReasoningEffort: m.reasoning,
-		ReviewMode:      m.reviewMode,
+	if inputCtx.SessionID == "" {
+		inputCtx.SessionID = m.resumeSessionID
 	}
 	id, err := m.gateway.SubmitUserInput(context.Background(), []events.InputMessage{
 		{Role: "user", Content: input},
-	}, subCtx)
+	}, inputCtx)
 	if err != nil {
 		m.err = err
 		m.pending = false
@@ -613,6 +617,16 @@ func (m *Model) startStream(input string) tea.Cmd {
 	}
 	m.activeSub = id
 	return tea.Batch(m.listenQueues()...)
+}
+
+func (m *Model) defaultInputContext() events.InputContext {
+	return events.InputContext{
+		SessionID:       m.resumeSessionID,
+		Model:           m.modelName,
+		Language:        m.language,
+		ReasoningEffort: m.reasoning,
+		ReviewMode:      m.reviewMode,
+	}
 }
 
 func (m *Model) listenStream() tea.Cmd {

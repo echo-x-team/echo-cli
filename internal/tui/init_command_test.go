@@ -94,6 +94,9 @@ func TestHandleInitCommandStartsStream(t *testing.T) {
 	if !strings.Contains(content, "Notable files: README.md, go.mod") {
 		t.Fatalf("unexpected files line: %q", content)
 	}
+	if gateway.inputCtx.Metadata["target"] != "@internal/execution" {
+		t.Fatalf("unexpected target metadata: %+v", gateway.inputCtx.Metadata)
+	}
 }
 
 func TestHandleInitCommandBlocksWhenPending(t *testing.T) {
