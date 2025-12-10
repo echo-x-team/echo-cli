@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,8 +129,6 @@ type Model struct {
 	spin            spinner.Model
 	showHelp        bool
 	transcriptDirty bool
-	// chatStatusHeight 为滚动状态栏预留高度。
-	chatStatusHeight int
 }
 
 type streamEvent struct {
@@ -193,32 +190,31 @@ func New(opts Options) *Model {
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
 
 	m := Model{
-		textarea:         ti,
-		viewport:         vp,
-		eventsPane:       evp,
-		search:           search,
-		sessions:         sessions,
-		modelName:        opts.Model,
-		reasoning:        opts.Reasoning,
-		sandbox:          opts.Sandbox,
-		language:         i18n.Normalize(opts.Language).Code(),
-		workdir:          opts.Workdir,
-		policy:           opts.Policy,
-		runner:           runner,
-		engine:           toolengine.New(opts.Policy, runner, approver, opts.Workdir),
-		roots:            opts.Roots,
-		approver:         approver,
-		initSend:         opts.InitialPrompt,
-		streamIdx:        -1,
-		mentionAt:        -1,
-		pickingSession:   opts.ResumePicker,
-		resumeSessionID:  opts.ResumeSessionID,
-		width:            90,
-		height:           24,
-		eventsWidth:      32,
-		spin:             spin,
-		transcriptDirty:  true,
-		chatStatusHeight: 1,
+		textarea:        ti,
+		viewport:        vp,
+		eventsPane:      evp,
+		search:          search,
+		sessions:        sessions,
+		modelName:       opts.Model,
+		reasoning:       opts.Reasoning,
+		sandbox:         opts.Sandbox,
+		language:        i18n.Normalize(opts.Language).Code(),
+		workdir:         opts.Workdir,
+		policy:          opts.Policy,
+		runner:          runner,
+		engine:          toolengine.New(opts.Policy, runner, approver, opts.Workdir),
+		roots:           opts.Roots,
+		approver:        approver,
+		initSend:        opts.InitialPrompt,
+		streamIdx:       -1,
+		mentionAt:       -1,
+		pickingSession:  opts.ResumePicker,
+		resumeSessionID: opts.ResumeSessionID,
+		width:           90,
+		height:          24,
+		eventsWidth:     32,
+		spin:            spin,
+		transcriptDirty: true,
 	}
 	if len(m.roots) == 0 && m.workdir != "" {
 		m.roots = []string{m.workdir}
@@ -450,11 +446,7 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	banner := renderBanner(m.modelName, m.reasoning, m.workdir, m.width)
 	tip := renderTip(m.width)
-	chatBody := m.viewport.View()
-	if status := m.renderScrollStatus(); status != "" {
-		chatBody = lipgloss.JoinVertical(lipgloss.Left, chatBody, status)
-	}
-	chatPane := renderPane("", chatBody, m.width, m.viewport.Height+m.chatStatusHeight)
+	chatPane := renderPane("", m.viewport.View(), m.width, m.viewport.Height)
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := statusLine(m.modelName, m.sandbox, m.workdir, m.pending, m.err, m.width, m.spin)
 	hints := renderHints(m.width)
@@ -764,16 +756,7 @@ func (m *Model) resize(width, height int) []tea.Cmd {
 		m.eventsPane.Width = eventsWidth
 		m.eventsPane.Height = contentHeight
 	}
-	statusReserve := m.chatStatusHeight
-	if contentHeight <= statusReserve {
-		statusReserve = 0
-	}
-	viewHeight := contentHeight - statusReserve
-	if viewHeight < 1 {
-		viewHeight = 1
-	}
-	m.chatStatusHeight = statusReserve
-	if cmd := m.viewport.Resize(chatWidth, viewHeight); cmd != nil {
+	if cmd := m.viewport.Resize(chatWidth, contentHeight); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	m.textarea.SetWidth(width)
@@ -984,31 +967,6 @@ func (m *Model) shouldScrollViewport(direction tea.KeyType, msg tea.KeyMsg) bool
 	default:
 		return false
 	}
-}
-
-func (m *Model) renderScrollStatus() string {
-	if m.chatStatusHeight == 0 {
-		return ""
-	}
-	percent := int(math.Round(m.viewport.ScrollPercent() * 100))
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 100 {
-		percent = 100
-	}
-	width := m.viewport.Width - 12
-	if width < 10 {
-		width = 10
-	}
-	filled := int(math.Round(float64(width) * float64(percent) / 100.0))
-	if filled > width {
-		filled = width
-	}
-	bar := "[" + strings.Repeat("=", filled) + strings.Repeat(" ", width-filled) + "]"
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#7D7A85")).
-		Render(fmt.Sprintf("%s %3d%%", bar, percent))
 }
 
 var modalStyle = lipgloss.NewStyle().
