@@ -436,11 +436,11 @@ type fakeModelClient struct {
 	chunks []string
 }
 
-func (c fakeModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+func (c fakeModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
 	return strings.Join(c.chunks, ""), nil
 }
 
-func (c fakeModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+func (c fakeModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	for _, chunk := range c.chunks {
 		select {
 		case <-ctx.Done():
@@ -458,11 +458,11 @@ type slowModelClient struct {
 	repeat int
 }
 
-func (c slowModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+func (c slowModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
 	return "", nil
 }
 
-func (c slowModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+func (c slowModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	for i := 0; i < c.repeat; i++ {
 		select {
 		case <-ctx.Done():
@@ -480,11 +480,11 @@ type toolLoopModelClient struct {
 	calls int
 }
 
-func (c *toolLoopModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+func (c *toolLoopModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
 	return "", nil
 }
 
-func (c *toolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+func (c *toolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	c.calls++
 	select {
 	case <-ctx.Done():
@@ -505,11 +505,11 @@ type splitToolLoopModelClient struct {
 	calls int
 }
 
-func (c *splitToolLoopModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+func (c *splitToolLoopModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
 	return "", nil
 }
 
-func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	c.calls++
 	select {
 	case <-ctx.Done():
@@ -538,11 +538,11 @@ type responseItemModelClient struct {
 	calls int
 }
 
-func (c *responseItemModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+func (c *responseItemModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
 	return "", nil
 }
 
-func (c *responseItemModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+func (c *responseItemModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	c.calls++
 	select {
 	case <-ctx.Done():

@@ -8,8 +8,8 @@ import (
 
 // ModelClient 定义模型客户端接口
 type ModelClient interface {
-	Complete(ctx context.Context, messages []Message, model string) (string, error)
-	Stream(ctx context.Context, messages []Message, model string, onEvent func(StreamEvent)) error
+	Complete(ctx context.Context, prompt Prompt) (string, error)
+	Stream(ctx context.Context, prompt Prompt, onEvent func(StreamEvent)) error
 }
 
 // EchoClient is a fallback when no API key is available.
@@ -17,16 +17,16 @@ type EchoClient struct {
 	Prefix string
 }
 
-func (c EchoClient) Complete(_ context.Context, messages []Message, _ string) (string, error) {
-	if len(messages) == 0 {
+func (c EchoClient) Complete(_ context.Context, prompt Prompt) (string, error) {
+	if len(prompt.Messages) == 0 {
 		return "", errors.New("no messages to echo")
 	}
-	last := messages[len(messages)-1]
+	last := prompt.Messages[len(prompt.Messages)-1]
 	return c.Prefix + last.Content, nil
 }
 
-func (c EchoClient) Stream(ctx context.Context, messages []Message, model string, onEvent func(StreamEvent)) error {
-	text, err := c.Complete(ctx, messages, model)
+func (c EchoClient) Stream(ctx context.Context, prompt Prompt, onEvent func(StreamEvent)) error {
+	text, err := c.Complete(ctx, prompt)
 	if err != nil {
 		return err
 	}

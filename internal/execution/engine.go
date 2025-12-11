@@ -484,7 +484,7 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 			llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
-		err := e.client.Stream(ctxRun, messages, model, func(evt agent.StreamEvent) {
+		err := e.client.Stream(ctxRun, prompt, func(evt agent.StreamEvent) {
 			switch evt.Type {
 			case agent.StreamEventTextDelta:
 				llmLog.Debugf("<- stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))

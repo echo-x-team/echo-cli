@@ -1,20 +1,20 @@
 package openai
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/prompts"
 
-	"github.com/sashabaranov/go-openai"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
+	"github.com/openai/openai-go/v3/shared/constant"
 )
 
 type Options struct {
@@ -25,49 +25,65 @@ type Options struct {
 }
 
 type Client struct {
-	api        *openai.Client
-	model      string
-	wire       string
-	baseURL    string
-	apiKey     string
-	httpClient openai.HTTPDoer
-}
-
-func New(opts Options) (*Client, error) {
-	if opts.APIKey == "" {
-		return nil, errors.New("missing OPENAI_API_KEY")
-	}
-	cfg := openai.DefaultConfig(opts.APIKey)
-	if opts.BaseURL != "" {
-		cfg.BaseURL = opts.BaseURL
-	}
-	return &Client{
-		api:        openai.NewClientWithConfig(cfg),
-		model:      opts.Model,
-		wire:       strings.ToLower(strings.TrimSpace(opts.WireAPI)),
-		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:     opts.APIKey,
-		httpClient: cfg.HTTPClient,
-	}, nil
+	api   *openai.Client
+	model string
+	wire  string
 }
 
 // 确保Client实现了agent.ModelClient接口
 var _ agent.ModelClient = (*Client)(nil)
 
-func (c *Client) Complete(ctx context.Context, messages []agent.Message, model string) (string, error) {
+func New(opts Options) (*Client, error) {
+	if strings.TrimSpace(opts.APIKey) == "" {
+		return nil, errors.New("missing OPENAI_API_KEY")
+	}
+	cfg := []option.RequestOption{
+		option.WithAPIKey(opts.APIKey),
+	}
+	if base := strings.TrimSpace(opts.BaseURL); base != "" {
+		cfg = append(cfg, option.WithBaseURL(strings.TrimRight(base, "/")))
+	}
+	client := openai.NewClient(cfg...)
+
+	return &Client{
+		api:   &client,
+		model: opts.Model,
+		wire:  strings.ToLower(strings.TrimSpace(opts.WireAPI)),
+	}, nil
+}
+
+func (c *Client) resolveModel(model string) string {
+	if strings.TrimSpace(model) != "" {
+		return model
+	}
+	return c.model
+}
+
+func (c *Client) Complete(ctx context.Context, prompt agent.Prompt) (string, error) {
 	if c.wire == "responses" {
-		return c.completeResponses(ctx, messages, model)
+		return c.completeResponses(ctx, prompt)
 	}
-	useModel := c.model
-	if model != "" {
-		useModel = model
+	return c.completeChat(ctx, prompt)
+}
+
+func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
+	if c.wire == "responses" {
+		return c.streamResponses(ctx, prompt, onEvent)
 	}
-	req := openai.ChatCompletionRequest{
-		Model:    useModel,
-		Messages: toWireMessages(messages),
-		Stream:   false,
+	return c.streamChat(ctx, prompt, onEvent)
+}
+
+func (c *Client) completeChat(ctx context.Context, prompt agent.Prompt) (string, error) {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(c.resolveModel(prompt.Model)),
+		Messages: toChatMessages(prompt.Messages),
 	}
-	resp, err := c.api.CreateChatCompletion(ctx, req)
+	if len(prompt.Tools) > 0 {
+		params.Tools = toChatTools(prompt.Tools)
+		params.ParallelToolCalls = openai.Bool(prompt.ParallelToolCalls)
+	}
+
+	resp, err := c.api.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return "", err
 	}
@@ -77,331 +93,213 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, model s
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (c *Client) Stream(ctx context.Context, messages []agent.Message, model string, onEvent func(agent.StreamEvent)) error {
-	if c.wire == "responses" {
-		return c.streamResponses(ctx, messages, model, onEvent)
+func (c *Client) streamChat(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(c.resolveModel(prompt.Model)),
+		Messages: toChatMessages(prompt.Messages),
 	}
-	useModel := c.model
-	if model != "" {
-		useModel = model
+	if len(prompt.Tools) > 0 {
+		params.Tools = toChatTools(prompt.Tools)
+		params.ParallelToolCalls = openai.Bool(prompt.ParallelToolCalls)
 	}
-	req := openai.ChatCompletionRequest{
-		Model:    useModel,
-		Messages: toWireMessages(messages),
-		Stream:   true,
+
+	stream := c.api.Chat.Completions.NewStreaming(ctx, params)
+	collector := newToolCallCollector()
+
+	for stream.Next() {
+		chunk := stream.Current()
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: choice.Delta.Content})
+			}
+			for _, call := range choice.Delta.ToolCalls {
+				collector.Add(call.ID, call.Function.Name, call.Function.Arguments)
+			}
+			if call := choice.Delta.FunctionCall; call.Name != "" || call.Arguments != "" {
+				collector.Add("", call.Name, call.Arguments)
+			}
+			switch choice.FinishReason {
+			case "tool_calls", "function_call":
+				for _, raw := range collector.Flush() {
+					onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
+				}
+			}
+		}
 	}
-	stream, err := c.api.CreateChatCompletionStream(ctx, req)
-	if err != nil {
+	if err := stream.Err(); err != nil {
 		return err
 	}
-	defer stream.Close()
-	for {
-		response, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		for _, choice := range response.Choices {
-			if choice.Delta.Content == "" {
-				continue
-			}
-			onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: choice.Delta.Content})
-		}
+	for _, raw := range collector.Flush() {
+		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
 	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	return nil
 }
 
-func toWireMessages(msgs []agent.Message) []openai.ChatCompletionMessage {
-	out := make([]openai.ChatCompletionMessage, 0, len(msgs))
-	for _, msg := range msgs {
-		out = append(out, openai.ChatCompletionMessage{
-			Role:    string(msg.Role),
-			Content: msg.Content,
-		})
-	}
-	return out
-}
-
-func (c *Client) httpDo(req *http.Request) (*http.Response, error) {
-	client := c.httpClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return client.Do(req)
-}
-
-func (c *Client) completeResponses(ctx context.Context, messages []agent.Message, model string) (string, error) {
-	useModel := c.model
-	if model != "" {
-		useModel = model
-	}
-	reqPayload := buildResponsesRequest(messages, useModel, false)
-	endpoint := strings.TrimRight(c.baseURL, "/") + "/responses"
-	body, err := json.Marshal(reqPayload)
+func (c *Client) completeResponses(ctx context.Context, prompt agent.Prompt) (string, error) {
+	params := buildResponseParams(prompt, c.resolveModel(prompt.Model))
+	resp, err := c.api.Responses.New(ctx, params)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	if resp.Error.Message != "" && resp.Error.JSON.Message.Valid() {
+		return "", errors.New(resp.Error.Message)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpDo(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("responses api error: status=%d body=%s", resp.StatusCode, string(data))
-	}
-	var decoded responsesResponsePayload
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return "", err
-	}
-	if decoded.Error != nil && decoded.Error.Message != "" {
-		return "", errors.New(decoded.Error.Message)
-	}
-	if text := decoded.OutputText; text != "" {
+	if text := extractResponseText(resp); text != "" {
 		return text, nil
-	}
-	for _, out := range decoded.Output {
-		for _, content := range out.Content {
-			if content.Text != "" {
-				return content.Text, nil
-			}
-		}
 	}
 	return "", errors.New("responses api returned no text")
 }
 
-func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, model string, onEvent func(agent.StreamEvent)) error {
-	useModel := c.model
-	if model != "" {
-		useModel = model
-	}
-	reqPayload := buildResponsesRequest(messages, useModel, true)
-	endpoint := strings.TrimRight(c.baseURL, "/") + "/responses"
-	body, err := json.Marshal(reqPayload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpDo(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("responses api error: status=%d body=%s", resp.StatusCode, string(data))
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+func (c *Client) streamResponses(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
+	params := buildResponseParams(prompt, c.resolveModel(prompt.Model))
+	stream := c.api.Responses.NewStreaming(ctx, params)
 
 	var sawText bool
-	var dataLines []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			continue
-		}
-		if strings.TrimSpace(line) != "" {
-			continue
-		}
-		if len(dataLines) == 0 {
-			continue
-		}
-		data := strings.Join(dataLines, "\n")
-		dataLines = dataLines[:0]
-		done, err := c.handleResponsesEvent(data, onEvent, &sawText)
-		if err != nil {
-			return err
-		}
-		if done {
+	for stream.Next() {
+		event := stream.Current()
+		switch v := event.AsAny().(type) {
+		case responses.ResponseTextDeltaEvent:
+			if v.Delta != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: v.Delta})
+				sawText = true
+			}
+		case responses.ResponseReasoningTextDeltaEvent:
+			if v.Delta != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: v.Delta})
+				sawText = true
+			}
+		case responses.ResponseReasoningSummaryTextDeltaEvent:
+			if v.Delta != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: v.Delta})
+				sawText = true
+			}
+		case responses.ResponseTextDoneEvent:
+			if !sawText && v.Text != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: v.Text})
+				sawText = true
+			}
+		case responses.ResponseOutputItemDoneEvent:
+			if raw := strings.TrimSpace(v.Item.RawJSON()); raw != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: json.RawMessage(raw)})
+			}
+		case responses.ResponseErrorEvent:
+			return errors.New(v.Message)
+		case responses.ResponseFailedEvent:
+			if msg := v.Response.Error.Message; msg != "" {
+				return errors.New(msg)
+			}
+			return errors.New("response failed")
+		case responses.ResponseCompletedEvent:
+			onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 			return nil
 		}
 	}
-	if len(dataLines) > 0 {
-		data := strings.Join(dataLines, "\n")
-		done, err := c.handleResponsesEvent(data, onEvent, &sawText)
-		if err != nil {
-			return err
-		}
-		if done {
-			return nil
-		}
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+	if err := stream.Err(); err != nil {
 		return err
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
 
-func (c *Client) handleResponsesEvent(data string, onEvent func(agent.StreamEvent), sawText *bool) (bool, error) {
-	payload := strings.TrimSpace(data)
-	if payload == "" {
-		return false, nil
-	}
-	if payload == "[DONE]" {
-		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
-		return true, nil
-	}
-	var event responsesSSE
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return false, err
-	}
-	if event.Error != nil && event.Error.Message != "" {
-		return false, errors.New(event.Error.Message)
-	}
-	if event.Response != nil && event.Response.Error != nil && event.Response.Error.Message != "" {
-		return false, errors.New(event.Response.Error.Message)
-	}
-	text := extractResponsesText(event)
-	if text != "" && !(event.Type == "response.completed" && *sawText) {
-		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: text})
-		*sawText = true
-	}
-	switch event.Type {
-	case "response.output_item.done":
-		if len(event.Item) > 0 {
-			onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: event.Item})
-		}
-	case "response.completed":
-		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
-		return true, nil
-	}
-	return false, nil
-}
-
-type responsesRequest struct {
-	Model        string                 `json:"model"`
-	Instructions string                 `json:"instructions,omitempty"`
-	Input        []responsesMessage     `json:"input"`
-	Stream       bool                   `json:"stream"`
-	Reasoning    map[string]string      `json:"reasoning,omitempty"`
-	Extra        map[string]interface{} `json:"-"`
-}
-
-type responsesMessage struct {
-	Role    string              `json:"role"`
-	Content []responsesFragment `json:"content"`
-}
-
-type responsesFragment struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type responsesSSE struct {
-	Type       string                 `json:"type"`
-	Delta      string                 `json:"delta"`
-	Output     []json.RawMessage      `json:"output"`
-	OutputText string                 `json:"output_text"`
-	Response   *responsesResponseBody `json:"response"`
-	Item       json.RawMessage        `json:"item"`
-	Error      *responsesError        `json:"error"`
-}
-
-type responsesResponseBody struct {
-	OutputText string            `json:"output_text"`
-	Output     []json.RawMessage `json:"output"`
-	Error      *responsesError   `json:"error"`
-}
-
-type responsesOutputBlock struct {
-	Content []responsesFragment `json:"content"`
-	Type    string              `json:"type"`
-}
-
-type responsesError struct {
-	Message string `json:"message"`
-}
-
-type responsesResponsePayload struct {
-	OutputText string                 `json:"output_text"`
-	Output     []responsesOutputBlock `json:"output"`
-	Error      *responsesError        `json:"error"`
-}
-
-func extractResponsesText(event responsesSSE) string {
-	if event.Delta != "" {
-		return event.Delta
-	}
-	if event.OutputText != "" {
-		return event.OutputText
-	}
-	if event.Response != nil {
-		if event.Response.OutputText != "" {
-			return event.Response.OutputText
-		}
-		for _, out := range event.Response.Output {
-			if text := firstTextFromBlock(out); text != "" {
-				return text
-			}
+func toChatMessages(msgs []agent.Message) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
+	for _, msg := range msgs {
+		switch msg.Role {
+		case agent.RoleSystem:
+			out = append(out, openai.SystemMessage(msg.Content))
+		case agent.RoleAssistant:
+			out = append(out, openai.AssistantMessage(msg.Content))
+		default:
+			out = append(out, openai.UserMessage(msg.Content))
 		}
 	}
-	if len(event.Item) > 0 {
-		if text := firstTextFromBlock(event.Item); text != "" {
-			return text
-		}
-	}
-	for _, out := range event.Output {
-		if text := firstTextFromBlock(out); text != "" {
-			return text
-		}
-	}
-	return ""
+	return out
 }
 
-func firstTextFromBlock(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var block responsesOutputBlock
-	if err := json.Unmarshal(raw, &block); err != nil {
-		return ""
-	}
-	for _, frag := range block.Content {
-		if frag.Text != "" {
-			return frag.Text
+func toChatTools(specs []agent.ToolSpec) []openai.ChatCompletionToolUnionParam {
+	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			continue
 		}
-	}
-	return ""
-}
-
-func buildResponsesRequest(messages []agent.Message, model string, stream bool) responsesRequest {
-	instructions, convo := splitInstructions(messages)
-	items := make([]responsesMessage, 0, len(convo))
-	for _, msg := range convo {
-		items = append(items, responsesMessage{
-			Role:    string(msg.Role),
-			Content: []responsesFragment{{Type: fragmentTypeForRole(msg.Role), Text: msg.Content}},
+		fn := shared.FunctionDefinitionParam{
+			Name:       name,
+			Parameters: spec.Parameters,
+			Strict:     openai.Bool(true),
+		}
+		if desc := strings.TrimSpace(spec.Description); desc != "" {
+			fn.Description = openai.String(desc)
+		}
+		tools = append(tools, openai.ChatCompletionToolUnionParam{
+			OfFunction: &openai.ChatCompletionFunctionToolParam{
+				Function: fn,
+			},
 		})
 	}
-	req := responsesRequest{
-		Model:        model,
-		Instructions: instructions,
-		Input:        items,
-		Stream:       stream,
+	return tools
+}
+
+func toResponseTools(specs []agent.ToolSpec) []responses.ToolUnionParam {
+	tools := make([]responses.ToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		name := strings.TrimSpace(spec.Name)
+		if name == "" {
+			continue
+		}
+		tool := responses.FunctionToolParam{
+			Name:       name,
+			Parameters: spec.Parameters,
+			Strict:     openai.Bool(true),
+			Type:       constant.Function("").Default(),
+		}
+		if desc := strings.TrimSpace(spec.Description); desc != "" {
+			tool.Description = openai.String(desc)
+		}
+		tools = append(tools, responses.ToolUnionParam{OfFunction: &tool})
+	}
+	return tools
+}
+
+func buildResponseParams(prompt agent.Prompt, model string) responses.ResponseNewParams {
+	instructions, convo := splitInstructions(prompt.Messages)
+	params := responses.ResponseNewParams{
+		Model: shared.ResponsesModel(model),
+	}
+	if instructions != "" {
+		params.Instructions = openai.String(instructions)
+	}
+	if len(convo) > 0 {
+		params.Input.OfInputItemList = responses.ResponseInputParam(toResponseInput(convo))
+	}
+	if len(prompt.Tools) > 0 {
+		params.Tools = toResponseTools(prompt.Tools)
+		params.ParallelToolCalls = openai.Bool(prompt.ParallelToolCalls)
 	}
 	if effort := prompts.ExtractReasoningEffort(instructions); effort != "" {
-		req.Reasoning = map[string]string{"effort": effort}
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(effort)}
 	}
-	return req
+	return params
+}
+
+func toResponseInput(msgs []agent.Message) []responses.ResponseInputItemUnionParam {
+	items := make([]responses.ResponseInputItemUnionParam, 0, len(msgs))
+	for _, msg := range msgs {
+		items = append(items, responses.ResponseInputItemParamOfMessage(msg.Content, toResponseRole(msg.Role)))
+	}
+	return items
+}
+
+func toResponseRole(role agent.Role) responses.EasyInputMessageRole {
+	switch role {
+	case agent.RoleAssistant:
+		return responses.EasyInputMessageRoleAssistant
+	case agent.RoleSystem:
+		return responses.EasyInputMessageRoleSystem
+	default:
+		return responses.EasyInputMessageRoleUser
+	}
 }
 
 func splitInstructions(messages []agent.Message) (string, []agent.Message) {
@@ -417,11 +315,92 @@ func splitInstructions(messages []agent.Message) (string, []agent.Message) {
 	return strings.Join(instructions, "\n\n"), convo
 }
 
-func fragmentTypeForRole(role agent.Role) string {
-	switch role {
-	case agent.RoleAssistant:
-		return "output_text"
-	default:
-		return "input_text"
+func extractResponseText(resp *responses.Response) string {
+	if resp == nil {
+		return ""
 	}
+	if text := strings.TrimSpace(resp.OutputText()); text != "" {
+		return text
+	}
+	for _, item := range resp.Output {
+		for _, content := range item.Content {
+			if text := strings.TrimSpace(content.Text); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+type toolCallCollector struct {
+	calls map[string]*pendingToolCall
+}
+
+type pendingToolCall struct {
+	ID   string
+	Name string
+	Args strings.Builder
+}
+
+func newToolCallCollector() *toolCallCollector {
+	return &toolCallCollector{
+		calls: make(map[string]*pendingToolCall),
+	}
+}
+
+func (c *toolCallCollector) Add(id, name, args string) {
+	if strings.TrimSpace(id) == "" && strings.TrimSpace(name) == "" {
+		return
+	}
+	callID := id
+	if callID == "" {
+		callID = fmt.Sprintf("call-%d", len(c.calls)+1)
+	}
+	entry := c.calls[callID]
+	if entry == nil {
+		entry = &pendingToolCall{ID: callID}
+		c.calls[callID] = entry
+	}
+	if name != "" {
+		entry.Name = name
+	}
+	if args != "" {
+		entry.Args.WriteString(args)
+	}
+}
+
+func (c *toolCallCollector) Flush() []json.RawMessage {
+	if len(c.calls) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(c.calls))
+	for _, call := range c.calls {
+		if call == nil || strings.TrimSpace(call.Name) == "" {
+			continue
+		}
+		raw := encodeFunctionCallItem(call.ID, call.Name, call.Args.String())
+		if len(raw) > 0 {
+			out = append(out, raw)
+		}
+	}
+	c.calls = make(map[string]*pendingToolCall)
+	return out
+}
+
+func encodeFunctionCallItem(id, name, args string) json.RawMessage {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	payload := map[string]any{
+		"type":      "function_call",
+		"id":        id,
+		"call_id":   id,
+		"name":      name,
+		"arguments": strings.TrimSpace(args),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return data
 }

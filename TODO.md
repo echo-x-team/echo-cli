@@ -1,5 +1,7 @@
 # Pending Work
-
+- [x] 重新设计 internal/agent ModelClient 以支持工具调用
+- [x] 对齐 codex_client_requirements 文档，更新 OpenAI 客户端
+- [x] 验证编译/测试通过
 - [x] 阅读 3rd/codex 中 ResponseItem 定义并设计 Go 等价结构
 - [x] 在 echo-cli 中新增 ResponseItem 等数据结构
 - [x] 重构 internal/execution run_task 逻辑以对齐 docs/CODEX_RUN_TASK_EXIT_LOGIC_ANALYSIS.md
