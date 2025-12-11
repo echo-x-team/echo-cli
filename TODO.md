@@ -10,3 +10,6 @@
 - [x] 对齐 3rd/codex/codex-rs 设计，规划 run_turn 层级（模型交互、工具识别、工具路由、工具执行）
 - [x] 实施分层调整并更新相关代码/结构说明
 - [x] 运行 gofmt/go test 验证
+- [x] 阅读 3rd/codex/codex-rs/core/src/tools/runtimes/apply_patch.rs 并整理工具需求
+- [x] 根据需求在 internal/tools 内实现 apply_patch 工具
+- [x] 运行 gofmt/go test 确认通过

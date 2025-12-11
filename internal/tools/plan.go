@@ -19,7 +19,8 @@ type UpdatePlanArgs struct {
 	Plan        []PlanItem `json:"plan"`
 }
 
-func decodePlanArgs(raw []byte) (UpdatePlanArgs, error) {
+// DecodePlanArgs parses update_plan arguments with strict schema checks.
+func DecodePlanArgs(raw []byte) (UpdatePlanArgs, error) {
 	var args UpdatePlanArgs
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()

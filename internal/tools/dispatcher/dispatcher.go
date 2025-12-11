@@ -7,6 +7,7 @@ import (
 	"echo-cli/internal/policy"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/tools"
+	"echo-cli/internal/tools/handlers"
 )
 
 type Dispatcher struct {
@@ -16,7 +17,7 @@ type Dispatcher struct {
 
 func New(pol policy.Policy, runner sandbox.Runner, bus *events.Bus, workdir string, approver tools.Approver) *Dispatcher {
 	return &Dispatcher{
-		runtime: tools.NewRuntime(pol, runner, approver, workdir),
+		runtime: tools.NewRuntime(pol, runner, approver, workdir, handlers.Default()),
 		bus:     bus,
 	}
 }

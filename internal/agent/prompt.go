@@ -36,17 +36,13 @@ func DefaultTools() []ToolSpec {
 		},
 		{
 			Name:        "apply_patch",
-			Description: "应用统一 diff 补丁，必要时可包含目标路径。",
+			Description: "应用统一 diff 补丁。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"patch": map[string]any{
 						"type":        "string",
 						"description": "统一 diff 补丁内容。",
-					},
-					"path": map[string]any{
-						"type":        "string",
-						"description": "可选：补丁目标相对路径。",
 					},
 				},
 				"required":             []string{"patch"},

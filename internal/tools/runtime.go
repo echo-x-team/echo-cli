@@ -19,14 +19,8 @@ type Runtime struct {
 	lock         sync.RWMutex
 }
 
-func NewRuntime(pol policy.Policy, runner Runner, approver Approver, workdir string) *Runtime {
-	registry := NewRegistry(
-		CommandHandler{},
-		ApplyPatchHandler{},
-		FileReadHandler{},
-		FileSearchHandler{},
-		PlanHandler{},
-	)
+func NewRuntime(pol policy.Policy, runner Runner, approver Approver, workdir string, handlers []Handler) *Runtime {
+	registry := NewRegistry(handlers...)
 
 	return &Runtime{
 		registry:     registry,

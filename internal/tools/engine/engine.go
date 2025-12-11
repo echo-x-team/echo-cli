@@ -5,6 +5,7 @@ import (
 
 	"echo-cli/internal/policy"
 	"echo-cli/internal/tools"
+	"echo-cli/internal/tools/handlers"
 )
 
 type Engine struct {
@@ -13,7 +14,7 @@ type Engine struct {
 
 func New(pol policy.Policy, runner tools.Runner, approver tools.Approver, workdir string) *Engine {
 	return &Engine{
-		runtime: tools.NewRuntime(pol, runner, approver, workdir),
+		runtime: tools.NewRuntime(pol, runner, approver, workdir, handlers.Default()),
 	}
 }
 
