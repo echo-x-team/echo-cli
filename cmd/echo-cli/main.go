@@ -39,6 +39,11 @@ func main() {
 	} else if toolsCloser != nil {
 		defer toolsCloser.Close()
 	}
+	if errCloser, _, err := execution.SetupErrorLog(execution.DefaultErrorLogPath); err != nil {
+		log.Warnf("failed to initialize error log (%s): %v", execution.DefaultErrorLogPath, err)
+	} else if errCloser != nil {
+		defer errCloser.Close()
+	}
 
 	root, rest, err := parseRootArgs(os.Args[1:])
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
+	"echo-cli/internal/logger"
 	"echo-cli/internal/tools"
 )
 
@@ -21,6 +22,7 @@ type Options struct {
 	Client         agent.ModelClient
 	Bus            *events.Bus
 	Defaults       SessionDefaults
+	ErrorLogPath   string
 	ToolTimeout    time.Duration
 	RequestTimeout time.Duration
 	Retries        int
@@ -55,6 +57,7 @@ func NewEngine(opts Options) *Engine {
 		}
 		manager = events.NewManager(cfg)
 	}
+	ensureErrorLogger(opts.ErrorLogPath)
 	toolTimeout := opts.ToolTimeout
 	if toolTimeout == 0 {
 		toolTimeout = 2 * time.Minute
@@ -167,6 +170,78 @@ type modelTurnOutput struct {
 	items        []ResponseItem
 }
 
+const toolErrorOutputLimit = 400
+
+func (e *Engine) logRunTaskError(submission events.Submission, stage string, err error, fields logger.Fields) {
+	if err == nil {
+		return
+	}
+	if fields == nil {
+		fields = logger.Fields{}
+	}
+	if stage != "" {
+		fields["stage"] = stage
+	}
+	if submission.SessionID != "" {
+		fields["session_id"] = submission.SessionID
+	}
+	if submission.ID != "" {
+		fields["submission_id"] = submission.ID
+	}
+	if submission.Operation.Kind != "" {
+		fields["operation"] = submission.Operation.Kind
+	}
+
+	msg := "runTask error"
+	if stage != "" {
+		msg = fmt.Sprintf("runTask %s error", stage)
+	}
+	errorLog.WithError(err).WithFields(fields).Error(msg)
+}
+
+func collectMarkerIDs(markers []tools.ToolCallMarker) []string {
+	ids := make([]string, 0, len(markers))
+	for _, marker := range markers {
+		if marker.ID != "" {
+			ids = append(ids, marker.ID)
+		}
+	}
+	return ids
+}
+
+func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnContext, seq int, result tools.ToolResult) {
+	reason := strings.TrimSpace(result.Error)
+	if reason == "" && result.ExitCode != 0 {
+		reason = fmt.Sprintf("non-zero exit code %d", result.ExitCode)
+	}
+	if reason == "" && strings.EqualFold(result.Status, "error") {
+		reason = "tool reported error status"
+	}
+	if reason == "" {
+		return
+	}
+	fields := logger.Fields{
+		"tool_id":     result.ID,
+		"tool_kind":   result.Kind,
+		"tool_status": result.Status,
+		"sequence":    seq,
+		"model":       turnCtx.Model,
+	}
+	if result.Command != "" {
+		fields["tool_command"] = result.Command
+	}
+	if result.Path != "" {
+		fields["tool_path"] = result.Path
+	}
+	if result.ExitCode != 0 {
+		fields["tool_exit_code"] = result.ExitCode
+	}
+	if out := strings.TrimSpace(result.Output); out != "" {
+		fields["tool_output_preview"] = sanitizeLogText(previewForLog(out, toolErrorOutputLimit))
+	}
+	e.logRunTaskError(submission, "tool_result", errors.New(reason), fields)
+}
+
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
 // runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
 func (e *Engine) runTask(ctx context.Context, submission events.Submission, state TurnState, emit events.EventPublisher) error {
@@ -179,6 +254,10 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	for {
 		if err := ctx.Err(); err != nil {
 			// Treat cancellation as an aborted turn to mirror Codex behaviour.
+			e.logRunTaskError(submission, "run_task", err, logger.Fields{
+				"sequence": seq,
+				"model":    turnCtx.Model,
+			})
 			return err
 		}
 
@@ -227,7 +306,16 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 
 	results, err := e.executeTools(ctx, output.markers, toolEvents)
 	if err != nil {
+		e.logRunTaskError(submission, "tool_execution", err, logger.Fields{
+			"model":      turnCtx.Model,
+			"sequence":   *seq,
+			"tool_ids":   collectMarkerIDs(output.markers),
+			"tool_count": len(output.markers),
+		})
 		return turnResult{}, err
+	}
+	for _, res := range results {
+		e.logToolResultError(submission, turnCtx, *seq, res)
 	}
 	processed = append(processed, processedFromToolResults(results)...)
 
@@ -272,6 +360,12 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 		}
 	})
 	if err != nil {
+		e.logRunTaskError(submission, "model_interaction", err, logger.Fields{
+			"model":           prompt.Model,
+			"message_count":   len(prompt.Messages),
+			"sequence":        *seq,
+			"response_so_far": sanitizeLogText(previewForLog(collector.builder.String(), 200)),
+		})
 		return modelTurnOutput{}, err
 	}
 
