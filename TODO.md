@@ -1,1 +1,10 @@
 # Pending Work
+
+- [x] 阅读 3rd/codex 中 ResponseItem 定义并设计 Go 等价结构
+- [x] 在 echo-cli 中新增 ResponseItem 等数据结构
+- [x] 重构 internal/execution run_task 逻辑以对齐 docs/CODEX_RUN_TASK_EXIT_LOGIC_ANALYSIS.md
+- [x] 运行 gofmt/go test 验证
+- [x] 梳理当前 run_task/run_turn 以及相关模块的分层现状
+- [x] 对齐 3rd/codex/codex-rs 设计，规划 run_turn 层级（模型交互、工具识别、工具路由、工具执行）
+- [x] 实施分层调整并更新相关代码/结构说明
+- [x] 运行 gofmt/go test 验证

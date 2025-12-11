@@ -155,23 +155,19 @@ func (e *Engine) handleInterrupt(ctx context.Context, submission events.Submissi
 	return nil
 }
 
-// runTask 执行单个任务的完整对话循环
-// 该函数实现了 LLM 交互的核心流程：生成响应 -> 检测工具调用 -> 收集工具结果 -> 生成新响应
-//
-// 参数说明：
-//   - ctx: 上下文对象，用于控制超时和取消
-//   - submission: 用户提交的任务信息，包含会话ID、输入内容等
-//   - state: 当前回合的状态，包含上下文和历史记录
-//   - emit: 事件发布器，用于推送输出事件
-//
-// 返回值：
-//   - error: 执行过程中的错误，nil 表示成功完成
-//
-// 优化建议：
-//  1. 考虑限制最大循环次数，避免无限循环
-//  2. 可以添加工具调用次数统计和限制
-//  3. 考虑实现响应内容的缓存机制
-//  4. 可以优化内存使用，避免历史记录无限增长
+type turnResult struct {
+	responses     []ResponseInputItem
+	itemsToRecord []ResponseItem
+	finalContent  string
+}
+
+type modelTurnOutput struct {
+	fullResponse string
+	markers      []tools.ToolCallMarker
+}
+
+// runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
+// runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
 func (e *Engine) runTask(ctx context.Context, submission events.Submission, state TurnState, emit events.EventPublisher) error {
 	seq := 0
 	turnCtx := state.Context
@@ -181,33 +177,29 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 
 	for {
 		if err := ctx.Err(); err != nil {
+			// Treat cancellation as an aborted turn to mirror Codex behaviour.
 			return err
 		}
 
-		prompt := turnCtx.BuildPrompt()
-		logPrompt(submission, prompt)
-
-		full, markers, err := e.runTurnOnce(ctx, submission, prompt, emit, &seq)
+		turn, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedMarkers)
 		if err != nil {
 			return err
 		}
+		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
 
-		e.dispatchToolMarkers(markers, publishedMarkers)
-
-		if full != "" {
-			assistant := agent.Message{Role: agent.RoleAssistant, Content: full}
-			turnCtx.History = append(turnCtx.History, assistant)
-			e.contexts.AppendAssistant(submission.SessionID, full)
+		if e.tokenLimitReached() {
+			e.runInlineAutoCompactTask(ctx, turnCtx)
+			continue
 		}
 
-		if len(markers) == 0 {
+		if len(turn.responses) == 0 {
 			_ = emit.Publish(ctx, events.Event{
 				Type:         events.EventAgentOutput,
 				SubmissionID: submission.ID,
 				SessionID:    submission.SessionID,
 				Timestamp:    time.Now(),
 				Payload: events.AgentOutput{
-					Content:  full,
+					Content:  turn.finalContent,
 					Final:    true,
 					Sequence: seq,
 				},
@@ -215,18 +207,78 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			})
 			return nil
 		}
-
-		results, err := e.collectToolResults(ctx, markers, toolEvents)
-		if err != nil {
-			return err
-		}
-
-		toolMsgs := formatToolResults(results)
-		if len(toolMsgs) > 0 {
-			turnCtx.History = append(turnCtx.History, toolMsgs...)
-			e.contexts.AppendMessages(submission.SessionID, toolMsgs)
-		}
 	}
+
+}
+
+// runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
+func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedMarkers map[string]struct{}) (turnResult, error) {
+	prompt := turnCtx.BuildPrompt()
+	logPrompt(submission, prompt)
+
+	output, err := e.runModelInteraction(ctx, submission, prompt, emit, seq)
+	if err != nil {
+		return turnResult{}, err
+	}
+
+	processed := e.identifyTools(output)
+	e.routeTools(output.markers, publishedMarkers)
+
+	results, err := e.executeTools(ctx, output.markers, toolEvents)
+	if err != nil {
+		return turnResult{}, err
+	}
+	processed = append(processed, processedFromToolResults(results)...)
+
+	responses, itemsToRecord := processItems(processed)
+
+	return turnResult{
+		responses:     responses,
+		itemsToRecord: itemsToRecord,
+		finalContent:  deriveFinalContent(output.fullResponse, itemsToRecord),
+	}, nil
+}
+
+// runModelInteraction 负责模型流式交互与输出收集，仅处理「模型交互」层。
+func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
+	full, markers, err := e.runTurnOnce(ctx, submission, prompt, emit, seq)
+	if err != nil {
+		return modelTurnOutput{}, err
+	}
+	return modelTurnOutput{
+		fullResponse: full,
+		markers:      markers,
+	}, nil
+}
+
+// identifyTools 负责从模型输出中识别工具标记并构造历史记录项（「工具识别」层）。
+func (e *Engine) identifyTools(output modelTurnOutput) []ProcessedResponseItem {
+	processed := make([]ProcessedResponseItem, 0, 1+len(output.markers))
+	if strings.TrimSpace(output.fullResponse) != "" && len(output.markers) == 0 {
+		processed = append(processed, ProcessedResponseItem{
+			Item: NewAssistantMessageItem(output.fullResponse),
+		})
+	}
+	processed = append(processed, responseItemsFromMarkers(output.markers)...)
+	return processed
+}
+
+// routeTools 发布工具调用标记到总线（「工具路由」层）。
+func (e *Engine) routeTools(markers []tools.ToolCallMarker, publishedMarkers map[string]struct{}) {
+	e.dispatchToolMarkers(markers, publishedMarkers)
+}
+
+// executeTools 等待工具执行结果并返回（「工具执行」层）。
+func (e *Engine) executeTools(ctx context.Context, markers []tools.ToolCallMarker, toolEvents <-chan tools.ToolEvent) ([]tools.ToolResult, error) {
+	return e.collectToolResults(ctx, markers, toolEvents)
+}
+
+func deriveFinalContent(fallback string, items []ResponseItem) string {
+	finalContent := lastAssistantMessage(items)
+	if finalContent == "" {
+		return fallback
+	}
+	return finalContent
 }
 
 func logPrompt(submission events.Submission, prompt Prompt) {
@@ -536,4 +588,38 @@ func formatPlanResult(res tools.ToolResult) string {
 		sb.WriteString(fmt.Sprintf("\n- [%s] %s", icon, item.Step))
 	}
 	return sb.String()
+}
+
+// processItems mirrors the codex.rs process_items helper: collect tool responses for the next turn
+// and return the list of items that should be recorded into the conversation history.
+func processItems(items []ProcessedResponseItem) ([]ResponseInputItem, []ResponseItem) {
+	responses := make([]ResponseInputItem, 0, len(items))
+	record := make([]ResponseItem, 0, len(items))
+	for _, item := range items {
+		record = append(record, item.Item)
+		if item.Response != nil {
+			responses = append(responses, *item.Response)
+		}
+	}
+	return responses, record
+}
+
+func (e *Engine) recordConversationItems(sessionID string, turnCtx *TurnContext, items []ResponseItem) {
+	if len(items) == 0 {
+		return
+	}
+	e.contexts.AppendResponseItems(sessionID, items)
+	turnCtx.ResponseHistory = append(turnCtx.ResponseHistory, items...)
+	turnCtx.History = append(turnCtx.History, responseItemsToAgentMessages(items)...)
+}
+
+// tokenLimitReached is a stub for now; hook in real token accounting when available.
+func (e *Engine) tokenLimitReached() bool {
+	return false
+}
+
+// runInlineAutoCompactTask is a no-op placeholder to keep control flow aligned with the Codex reference.
+func (e *Engine) runInlineAutoCompactTask(ctx context.Context, turnCtx TurnContext) {
+	_ = ctx
+	log.Infof("token limit reached for model=%s; auto-compaction not implemented", turnCtx.Model)
 }

@@ -27,6 +27,7 @@ type sessionState struct {
 	reviewMode      bool
 	language        string
 	history         []agent.Message
+	responseHistory []ResponseItem
 }
 
 // TurnContext 聚合生成提示词所需的上下文数据。
@@ -40,6 +41,8 @@ type TurnContext struct {
 	ReviewMode      bool            // 是否启用审查模式
 	Attachments     []agent.Message // 附件内容（文件、图片等）
 	History         []agent.Message // 纯对话历史（不包括系统注入的内容）
+	AttachmentItems []ResponseItem  // 附件的 ResponseItem 表示
+	ResponseHistory []ResponseItem  // 纯对话历史（ResponseItem 形态）
 }
 
 // TurnState 描述一次回合所需的上下文与模型信息。
@@ -78,14 +81,19 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 
 	// 构建纯对话历史（不包含系统注入的内容）
 	history := make([]agent.Message, 0, len(state.history)+len(items))
+	responseHistory := make([]ResponseItem, 0, len(state.responseHistory)+len(items))
 	history = append(history, state.history...) // existing history first
+	responseHistory = append(responseHistory, state.responseHistory...)
 
 	// 转换当前用户输入为消息
 	userMessages := toAgentMessages(items)
+	userResponseItems := toResponseItems(items)
 	history = append(history, userMessages...)
+	responseHistory = append(responseHistory, userResponseItems...)
 
 	// 更新会话状态的历史记录
 	state.history = append(state.history, userMessages...)
+	state.responseHistory = append(state.responseHistory, userResponseItems...)
 
 	// 从会话状态获取默认值
 	model := state.model
@@ -122,6 +130,7 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 
 	// 转换附件为 agent.Message 格式
 	attachments := toAgentMessages(ctx.Attachments)
+	attachmentItems := toResponseItems(ctx.Attachments)
 
 	m.mu.Unlock()
 
@@ -136,7 +145,9 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 			ReviewMode:      reviewMode,
 			Language:        language,
 			Attachments:     attachments,
+			AttachmentItems: attachmentItems,
 			History:         history, // 纯对话历史，不包含系统注入的内容
+			ResponseHistory: responseHistory,
 		},
 	}
 }
@@ -146,7 +157,8 @@ func (m *ContextManager) AppendAssistant(sessionID string, content string) {
 	if content == "" {
 		return
 	}
-	m.AppendMessages(sessionID, []agent.Message{{Role: agent.RoleAssistant, Content: content}})
+	item := NewAssistantMessageItem(content)
+	m.AppendResponseItems(sessionID, []ResponseItem{item})
 }
 
 // AppendMessages 追加任意角色的消息到历史。
@@ -157,6 +169,7 @@ func (m *ContextManager) AppendMessages(sessionID string, msgs []agent.Message) 
 	m.mu.Lock()
 	state := m.ensureSession(sessionID, events.InputContext{})
 	state.history = append(state.history, msgs...)
+	state.responseHistory = append(state.responseHistory, messagesToResponseItems(msgs)...)
 	m.mu.Unlock()
 }
 
@@ -171,6 +184,31 @@ func (m *ContextManager) History(sessionID string) []agent.Message {
 	history := make([]agent.Message, len(state.history))
 	copy(history, state.history)
 	return history
+}
+
+// ResponseHistory 返回 ResponseItem 形态的历史拷贝。
+func (m *ContextManager) ResponseHistory(sessionID string) []ResponseItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.sessions[sessionID]
+	if state == nil {
+		return nil
+	}
+	history := make([]ResponseItem, len(state.responseHistory))
+	copy(history, state.responseHistory)
+	return history
+}
+
+// AppendResponseItems 追加 ResponseItem 并同步生成 prompt 消息。
+func (m *ContextManager) AppendResponseItems(sessionID string, items []ResponseItem) {
+	if len(items) == 0 {
+		return
+	}
+	m.mu.Lock()
+	state := m.ensureSession(sessionID, events.InputContext{})
+	state.responseHistory = append(state.responseHistory, items...)
+	state.history = append(state.history, responseItemsToAgentMessages(items)...)
+	m.mu.Unlock()
 }
 
 func (m *ContextManager) ensureSession(sessionID string, ctx events.InputContext) *sessionState {
@@ -233,6 +271,37 @@ func toAgentMessages(items []events.InputMessage) []agent.Message {
 		})
 	}
 	return msgs
+}
+
+func toResponseItems(items []events.InputMessage) []ResponseItem {
+	msgs := make([]ResponseItem, 0, len(items))
+	for _, item := range items {
+		msgs = append(msgs, ResponseItem{
+			Type: ResponseItemTypeMessage,
+			Message: &MessageResponseItem{
+				Role: item.Role,
+				Content: []ContentItem{
+					{Type: ContentItemInputText, Text: item.Content},
+				},
+			},
+		})
+	}
+	return msgs
+}
+
+func messagesToResponseItems(msgs []agent.Message) []ResponseItem {
+	items := make([]ResponseItem, 0, len(msgs))
+	for _, msg := range msgs {
+		ri := ResponseItem{
+			Type: ResponseItemTypeMessage,
+			Message: &MessageResponseItem{
+				Role:    string(msg.Role),
+				Content: []ContentItem{{Type: ContentItemOutputText, Text: msg.Content}},
+			},
+		}
+		items = append(items, ri)
+	}
+	return items
 }
 
 func cloneStrings(in []string) []string {
