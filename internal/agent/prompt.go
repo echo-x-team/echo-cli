@@ -72,9 +72,10 @@ func DefaultTools() []ToolSpec {
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "可选：用于过滤结果的关键词或模式。",
+						"description": "用于过滤结果的关键词或模式（可传空字符串获取全部）。",
 					},
 				},
+				"required":             []string{"query"},
 				"additionalProperties": false,
 			},
 		},
@@ -86,7 +87,7 @@ func DefaultTools() []ToolSpec {
 				"properties": map[string]any{
 					"explanation": map[string]any{
 						"type":        "string",
-						"description": "可选：对计划变更的简要说明。",
+						"description": "对计划变更的简要说明，可为空字符串。",
 					},
 					"plan": map[string]any{
 						"type": "array",
@@ -111,7 +112,7 @@ func DefaultTools() []ToolSpec {
 						},
 					},
 				},
-				"required":             []string{"plan"},
+				"required":             []string{"explanation", "plan"},
 				"additionalProperties": false,
 			},
 		},
