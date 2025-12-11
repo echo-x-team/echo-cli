@@ -77,9 +77,9 @@ func (c *Client) Complete(ctx context.Context, messages []agent.Message, model s
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (c *Client) Stream(ctx context.Context, messages []agent.Message, model string, onChunk func(string)) error {
+func (c *Client) Stream(ctx context.Context, messages []agent.Message, model string, onEvent func(agent.StreamEvent)) error {
 	if c.wire == "responses" {
-		return c.streamResponses(ctx, messages, model, onChunk)
+		return c.streamResponses(ctx, messages, model, onEvent)
 	}
 	useModel := c.model
 	if model != "" {
@@ -98,13 +98,17 @@ func (c *Client) Stream(ctx context.Context, messages []agent.Message, model str
 	for {
 		response, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 			return nil
 		}
 		if err != nil {
 			return err
 		}
 		for _, choice := range response.Choices {
-			onChunk(choice.Delta.Content)
+			if choice.Delta.Content == "" {
+				continue
+			}
+			onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: choice.Delta.Content})
 		}
 	}
 }
@@ -174,7 +178,7 @@ func (c *Client) completeResponses(ctx context.Context, messages []agent.Message
 	return "", errors.New("responses api returned no text")
 }
 
-func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, model string, onChunk func(string)) error {
+func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, model string, onEvent func(agent.StreamEvent)) error {
 	useModel := c.model
 	if model != "" {
 		useModel = model
@@ -222,7 +226,7 @@ func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, 
 		}
 		data := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
-		done, err := c.handleResponsesEvent(data, onChunk, &sawText)
+		done, err := c.handleResponsesEvent(data, onEvent, &sawText)
 		if err != nil {
 			return err
 		}
@@ -232,7 +236,7 @@ func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, 
 	}
 	if len(dataLines) > 0 {
 		data := strings.Join(dataLines, "\n")
-		done, err := c.handleResponsesEvent(data, onChunk, &sawText)
+		done, err := c.handleResponsesEvent(data, onEvent, &sawText)
 		if err != nil {
 			return err
 		}
@@ -243,15 +247,17 @@ func (c *Client) streamResponses(ctx context.Context, messages []agent.Message, 
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
 
-func (c *Client) handleResponsesEvent(data string, onChunk func(string), sawText *bool) (bool, error) {
+func (c *Client) handleResponsesEvent(data string, onEvent func(agent.StreamEvent), sawText *bool) (bool, error) {
 	payload := strings.TrimSpace(data)
 	if payload == "" {
 		return false, nil
 	}
 	if payload == "[DONE]" {
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return true, nil
 	}
 	var event responsesSSE
@@ -266,12 +272,16 @@ func (c *Client) handleResponsesEvent(data string, onChunk func(string), sawText
 	}
 	text := extractResponsesText(event)
 	if text != "" && !(event.Type == "response.completed" && *sawText) {
-		onChunk(text)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: text})
 		*sawText = true
 	}
 	switch event.Type {
-	case "response.output_text.delta":
+	case "response.output_item.done":
+		if len(event.Item) > 0 {
+			onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: event.Item})
+		}
 	case "response.completed":
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return true, nil
 	}
 	return false, nil
@@ -299,21 +309,22 @@ type responsesFragment struct {
 type responsesSSE struct {
 	Type       string                 `json:"type"`
 	Delta      string                 `json:"delta"`
-	Output     []responsesOutputBlock `json:"output"`
+	Output     []json.RawMessage      `json:"output"`
 	OutputText string                 `json:"output_text"`
 	Response   *responsesResponseBody `json:"response"`
-	Item       *responsesOutputBlock  `json:"item"`
+	Item       json.RawMessage        `json:"item"`
 	Error      *responsesError        `json:"error"`
 }
 
 type responsesResponseBody struct {
-	OutputText string                 `json:"output_text"`
-	Output     []responsesOutputBlock `json:"output"`
-	Error      *responsesError        `json:"error"`
+	OutputText string            `json:"output_text"`
+	Output     []json.RawMessage `json:"output"`
+	Error      *responsesError   `json:"error"`
 }
 
 type responsesOutputBlock struct {
 	Content []responsesFragment `json:"content"`
+	Type    string              `json:"type"`
 }
 
 type responsesError struct {
@@ -338,25 +349,35 @@ func extractResponsesText(event responsesSSE) string {
 			return event.Response.OutputText
 		}
 		for _, out := range event.Response.Output {
-			for _, frag := range out.Content {
-				if frag.Text != "" {
-					return frag.Text
-				}
+			if text := firstTextFromBlock(out); text != "" {
+				return text
 			}
 		}
 	}
-	if event.Item != nil {
-		for _, frag := range event.Item.Content {
-			if frag.Text != "" {
-				return frag.Text
-			}
+	if len(event.Item) > 0 {
+		if text := firstTextFromBlock(event.Item); text != "" {
+			return text
 		}
 	}
 	for _, out := range event.Output {
-		for _, frag := range out.Content {
-			if frag.Text != "" {
-				return frag.Text
-			}
+		if text := firstTextFromBlock(out); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func firstTextFromBlock(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var block responsesOutputBlock
+	if err := json.Unmarshal(raw, &block); err != nil {
+		return ""
+	}
+	for _, frag := range block.Content {
+		if frag.Text != "" {
+			return frag.Text
 		}
 	}
 	return ""

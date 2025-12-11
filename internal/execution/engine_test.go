@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -344,6 +345,93 @@ done:
 	}
 }
 
+func TestEngineHandlesResponseItemsFromStream(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	bus := events.NewBus()
+	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 2})
+	client := &responseItemModelClient{}
+	engine := NewEngine(Options{
+		Manager:     manager,
+		Client:      client,
+		Bus:         bus,
+		Defaults:    SessionDefaults{Model: "gpt-test", System: "system"},
+		ToolTimeout: time.Second,
+	})
+
+	engine.Start(ctx)
+	defer engine.Close()
+
+	go func() {
+		sub := bus.Subscribe()
+		for evt := range sub {
+			marker, ok := evt.(tools.ToolCallMarker)
+			if !ok || marker.ID != "call-item-1" {
+				continue
+			}
+			bus.Publish(tools.ToolEvent{
+				Type: "item.completed",
+				Result: tools.ToolResult{
+					ID:     marker.ID,
+					Kind:   tools.ToolCommand,
+					Status: "completed",
+					Output: "tool output from item",
+				},
+			})
+			return
+		}
+	}()
+
+	eventsCh := engine.Events()
+	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-item"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	var outputs []events.AgentOutput
+	var taskResult events.TaskResult
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for response-item stream, outputs=%v", outputs)
+		case ev := <-eventsCh:
+			if ev.SubmissionID != subID {
+				continue
+			}
+			switch ev.Type {
+			case events.EventAgentOutput:
+				output, ok := ev.Payload.(events.AgentOutput)
+				if !ok {
+					t.Fatalf("unexpected payload type %#v", ev.Payload)
+				}
+				outputs = append(outputs, output)
+			case events.EventError:
+				t.Fatalf("unexpected error payload: %v", ev.Payload)
+			case events.EventTaskCompleted:
+				if res, ok := ev.Payload.(events.TaskResult); ok {
+					taskResult = res
+				}
+				goto done
+			}
+		}
+	}
+
+done:
+	if taskResult.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", taskResult)
+	}
+	if client.calls < 2 {
+		t.Fatalf("expected multiple model calls with response items, got %d", client.calls)
+	}
+	if len(outputs) == 0 || !outputs[len(outputs)-1].Final {
+		t.Fatalf("expected final agent output, got %+v", outputs)
+	}
+	if outputs[len(outputs)-1].Content != "final via item" {
+		t.Fatalf("unexpected final content: %q", outputs[len(outputs)-1].Content)
+	}
+}
+
 type fakeModelClient struct {
 	chunks []string
 }
@@ -352,15 +440,16 @@ func (c fakeModelClient) Complete(_ context.Context, _ []agent.Message, _ string
 	return strings.Join(c.chunks, ""), nil
 }
 
-func (c fakeModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onChunk func(string)) error {
+func (c fakeModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
 	for _, chunk := range c.chunks {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		onChunk(chunk)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: chunk})
 	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
 
@@ -373,16 +462,17 @@ func (c slowModelClient) Complete(_ context.Context, _ []agent.Message, _ string
 	return "", nil
 }
 
-func (c slowModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onChunk func(string)) error {
+func (c slowModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
 	for i := 0; i < c.repeat; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		onChunk("tick")
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "tick"})
 		time.Sleep(c.delay)
 	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
 
@@ -394,7 +484,7 @@ func (c *toolLoopModelClient) Complete(_ context.Context, _ []agent.Message, _ s
 	return "", nil
 }
 
-func (c *toolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onChunk func(string)) error {
+func (c *toolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
 	c.calls++
 	select {
 	case <-ctx.Done():
@@ -402,10 +492,12 @@ func (c *toolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ s
 	default:
 	}
 	if c.calls == 1 {
-		onChunk(`{"tool":"command","id":"call-1","args":{"command":"echo hi"}}`)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"command","id":"call-1","args":{"command":"echo hi"}}`})
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return nil
 	}
-	onChunk("final answer after tool")
+	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final answer after tool"})
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
 
@@ -417,7 +509,7 @@ func (c *splitToolLoopModelClient) Complete(_ context.Context, _ []agent.Message
 	return "", nil
 }
 
-func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onChunk func(string)) error {
+func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
 	c.calls++
 	select {
 	case <-ctx.Done():
@@ -432,10 +524,46 @@ func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ []agent.Message
 				return ctx.Err()
 			default:
 			}
-			onChunk(ch)
+			onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: ch})
 		}
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return nil
 	}
-	onChunk("final after split tool")
+	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final after split tool"})
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	return nil
+}
+
+type responseItemModelClient struct {
+	calls int
+}
+
+func (c *responseItemModelClient) Complete(_ context.Context, _ []agent.Message, _ string) (string, error) {
+	return "", nil
+}
+
+func (c *responseItemModelClient) Stream(ctx context.Context, _ []agent.Message, _ string, onEvent func(agent.StreamEvent)) error {
+	c.calls++
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if c.calls == 1 {
+		item := ResponseItem{
+			Type: ResponseItemTypeFunctionCall,
+			FunctionCall: &FunctionCallResponseItem{
+				Name:      "command",
+				Arguments: `{"command":"echo hi"}`,
+				CallID:    "call-item-1",
+			},
+		}
+		raw, _ := json.Marshal(item)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+		return nil
+	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final via item"})
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }

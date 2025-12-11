@@ -207,3 +207,59 @@ func TestSubmitUserInputMetadata(t *testing.T) {
 		t.Fatalf("unexpected metadata: %+v", seenMeta)
 	}
 }
+
+func TestManagerTreatsDeadlineExceededAsDone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	mgr := NewManager(ManagerConfig{SubmissionBuffer: 2, EventBuffer: 4, Workers: 1})
+	defer mgr.Close()
+
+	mgr.RegisterHandler(OperationUserInput, HandlerFunc(func(context.Context, Submission, EventPublisher) error {
+		return context.DeadlineExceeded
+	}))
+
+	mgr.Start(ctx)
+
+	events := mgr.Subscribe()
+	id, err := mgr.SubmitUserInput(ctx, []InputMessage{{Role: "user", Content: "hi"}}, InputContext{SessionID: "sess-deadline"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	var (
+		gotResult   TaskResult
+		sawComplete bool
+		sawError    bool
+	)
+
+	for !sawComplete {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for deadline handling, result=%+v", gotResult)
+		case ev := <-events:
+			if ev.SubmissionID != id {
+				continue
+			}
+			switch ev.Type {
+			case EventError:
+				sawError = true
+			case EventTaskCompleted:
+				if res, ok := ev.Payload.(TaskResult); ok {
+					gotResult = res
+				}
+				sawComplete = true
+			}
+		}
+	}
+
+	if sawError {
+		t.Fatalf("unexpected error event for deadline exceeded")
+	}
+	if gotResult.Status != "Done" {
+		t.Fatalf("expected Done status, got %+v", gotResult)
+	}
+	if gotResult.Error != "" {
+		t.Fatalf("expected empty error message, got %q", gotResult.Error)
+	}
+}

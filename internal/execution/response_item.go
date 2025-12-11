@@ -633,6 +633,15 @@ func processedFromToolResults(results []tools.ToolResult) []ProcessedResponseIte
 	return items
 }
 
+// processedFromResponseItems wraps raw ResponseItem entries into ProcessedResponseItem for persistence.
+func processedFromResponseItems(items []ResponseItem) []ProcessedResponseItem {
+	out := make([]ProcessedResponseItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, ProcessedResponseItem{Item: item})
+	}
+	return out
+}
+
 // formatPlanText mirrors the textual plan rendering used for tool results.
 func formatPlanText(plan []tools.PlanItem, explanation string) string {
 	var sb strings.Builder

@@ -164,6 +164,7 @@ type turnResult struct {
 type modelTurnOutput struct {
 	fullResponse string
 	markers      []tools.ToolCallMarker
+	items        []ResponseItem
 }
 
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
@@ -240,26 +241,61 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 }
 
 // runModelInteraction 负责模型流式交互与输出收集，仅处理「模型交互」层。
+// 对齐 Codex：拉取流式事件、发布增量输出、收集工具标记与 ResponseItem。
 func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
-	full, markers, err := e.runTurnOnce(ctx, submission, prompt, emit, seq)
+	collector := newModelStreamCollector()
+
+	err := e.streamPrompt(ctx, prompt, func(evt agent.StreamEvent) {
+		switch evt.Type {
+		case agent.StreamEventTextDelta:
+			if evt.Text == "" {
+				return
+			}
+			collector.OnTextDelta(evt.Text)
+
+			_ = emit.Publish(ctx, events.Event{
+				Type:         events.EventAgentOutput,
+				SubmissionID: submission.ID,
+				SessionID:    submission.SessionID,
+				Timestamp:    time.Now(),
+				Payload: events.AgentOutput{
+					Content:  evt.Text,
+					Sequence: *seq,
+				},
+				Metadata: submission.Metadata,
+			})
+			*seq++
+		case agent.StreamEventItem:
+			collector.OnItem(evt.Item)
+		case agent.StreamEventCompleted:
+		default:
+		}
+	})
 	if err != nil {
 		return modelTurnOutput{}, err
 	}
-	return modelTurnOutput{
-		fullResponse: full,
-		markers:      markers,
-	}, nil
+
+	return collector.Result(), nil
 }
 
 // identifyTools 负责从模型输出中识别工具标记并构造历史记录项（「工具识别」层）。
 func (e *Engine) identifyTools(output modelTurnOutput) []ProcessedResponseItem {
-	processed := make([]ProcessedResponseItem, 0, 1+len(output.markers))
-	if strings.TrimSpace(output.fullResponse) != "" && len(output.markers) == 0 {
+	processed := make([]ProcessedResponseItem, 0, len(output.items)+1+len(output.markers))
+	toolIDs := collectToolCallIDs(output.items)
+	processed = append(processed, processedFromResponseItems(output.items)...)
+	if strings.TrimSpace(output.fullResponse) != "" && len(output.markers) == 0 && len(output.items) == 0 {
 		processed = append(processed, ProcessedResponseItem{
 			Item: NewAssistantMessageItem(output.fullResponse),
 		})
 	}
-	processed = append(processed, responseItemsFromMarkers(output.markers)...)
+	for _, item := range responseItemsFromMarkers(output.markers) {
+		if call := item.Item.CustomToolCall; call != nil {
+			if _, ok := toolIDs[call.CallID]; ok {
+				continue
+			}
+		}
+		processed = append(processed, item)
+	}
 	return processed
 }
 
@@ -293,42 +329,149 @@ func logPrompt(submission events.Submission, prompt Prompt) {
 	}
 }
 
-// runTurnOnce 对齐 Codex 的“模型流 → 事件 → 工具调度”流程：流式收集输出、发布增量事件并返回工具标记。
-func (e *Engine) runTurnOnce(ctx context.Context, submission events.Submission, prompt Prompt, emit events.EventPublisher, seq *int) (string, []tools.ToolCallMarker, error) {
-	var builder strings.Builder
-
-	err := e.streamPrompt(ctx, prompt, func(chunk string) {
-		if chunk == "" {
-			return
-		}
-		builder.WriteString(chunk)
-
-		_ = emit.Publish(ctx, events.Event{
-			Type:         events.EventAgentOutput,
-			SubmissionID: submission.ID,
-			SessionID:    submission.SessionID,
-			Timestamp:    time.Now(),
-			Payload: events.AgentOutput{
-				Content:  chunk,
-				Sequence: *seq,
-			},
-			Metadata: submission.Metadata,
-		})
-		*seq++
-	})
-	if err != nil {
-		return "", nil, err
-	}
-
-	full := builder.String()
-	markers, parseErr := tools.ParseMarkers(full)
-	if parseErr != nil {
-		log.Warnf("parse markers session=%s submission=%s err=%v", submission.SessionID, submission.ID, parseErr)
-	}
-	return full, markers, nil
+type modelStreamCollector struct {
+	builder     strings.Builder
+	markers     []tools.ToolCallMarker
+	items       []ResponseItem
+	seenMarkers map[string]struct{}
 }
 
-func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(string)) error {
+func newModelStreamCollector() *modelStreamCollector {
+	return &modelStreamCollector{
+		seenMarkers: make(map[string]struct{}),
+	}
+}
+
+func (c *modelStreamCollector) OnTextDelta(chunk string) {
+	c.builder.WriteString(chunk)
+	c.captureMarkersFromText()
+}
+
+func (c *modelStreamCollector) OnItem(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var item ResponseItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		log.Warnf("parse stream item: %v", err)
+		return
+	}
+	c.items = append(c.items, item)
+	c.addMarkers(markersFromResponseItem(item))
+	if text := textFromResponseItem(item); text != "" {
+		c.builder.WriteString(text)
+		c.captureMarkersFromText()
+	}
+}
+
+func (c *modelStreamCollector) Result() modelTurnOutput {
+	return modelTurnOutput{
+		fullResponse: c.builder.String(),
+		markers:      c.markers,
+		items:        c.items,
+	}
+}
+
+func (c *modelStreamCollector) captureMarkersFromText() {
+	all, _ := tools.ParseMarkers(c.builder.String())
+	c.addMarkers(all)
+}
+
+func (c *modelStreamCollector) addMarkers(markers []tools.ToolCallMarker) {
+	for _, marker := range markers {
+		if marker.Tool == "" || marker.ID == "" {
+			continue
+		}
+		if _, ok := c.seenMarkers[marker.ID]; ok {
+			continue
+		}
+		c.seenMarkers[marker.ID] = struct{}{}
+		c.markers = append(c.markers, marker)
+	}
+}
+
+func markersFromResponseItem(item ResponseItem) []tools.ToolCallMarker {
+	switch item.Type {
+	case ResponseItemTypeFunctionCall:
+		if item.FunctionCall == nil || item.FunctionCall.Name == "" || item.FunctionCall.CallID == "" {
+			return nil
+		}
+		args := normalizeRawJSON(item.FunctionCall.Arguments)
+		return []tools.ToolCallMarker{{
+			Tool: item.FunctionCall.Name,
+			ID:   item.FunctionCall.CallID,
+			Args: args,
+		}}
+	case ResponseItemTypeCustomToolCall:
+		if item.CustomToolCall == nil || item.CustomToolCall.Name == "" || item.CustomToolCall.CallID == "" {
+			return nil
+		}
+		args := normalizeRawJSON(item.CustomToolCall.Input)
+		return []tools.ToolCallMarker{{
+			Tool: item.CustomToolCall.Name,
+			ID:   item.CustomToolCall.CallID,
+			Args: args,
+		}}
+	default:
+		return nil
+	}
+}
+
+func textFromResponseItem(item ResponseItem) string {
+	switch item.Type {
+	case ResponseItemTypeMessage:
+		if item.Message == nil {
+			return ""
+		}
+		return flattenContentItems(item.Message.Content)
+	case ResponseItemTypeReasoning:
+		if item.Reasoning == nil {
+			return ""
+		}
+		return flattenReasoning(*item.Reasoning)
+	default:
+		return ""
+	}
+}
+
+func collectToolCallIDs(items []ResponseItem) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, item := range items {
+		switch item.Type {
+		case ResponseItemTypeFunctionCall:
+			if item.FunctionCall != nil && item.FunctionCall.CallID != "" {
+				ids[item.FunctionCall.CallID] = struct{}{}
+			}
+		case ResponseItemTypeCustomToolCall:
+			if item.CustomToolCall != nil && item.CustomToolCall.CallID != "" {
+				ids[item.CustomToolCall.CallID] = struct{}{}
+			}
+		case ResponseItemTypeLocalShellCall:
+			if item.LocalShellCall != nil && item.LocalShellCall.CallID != "" {
+				ids[item.LocalShellCall.CallID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+func normalizeRawJSON(text string) json.RawMessage {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return json.RawMessage("null")
+	}
+	data := []byte(trimmed)
+	if json.Valid(data) {
+		return json.RawMessage(data)
+	}
+	encoded, err := json.Marshal(trimmed)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(encoded)
+}
+
+func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(agent.StreamEvent)) error {
 	messages := prompt.Messages
 	model := strings.TrimSpace(prompt.Model)
 	if model == "" {
@@ -341,8 +484,18 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onChunk func(s
 			llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
-		err := e.client.Stream(ctxRun, messages, model, func(chunk string) {
-			onChunk(chunk)
+		err := e.client.Stream(ctxRun, messages, model, func(evt agent.StreamEvent) {
+			switch evt.Type {
+			case agent.StreamEventTextDelta:
+				llmLog.Debugf("<- stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
+			case agent.StreamEventItem:
+				llmLog.Debugf("<- stream chunk type=item len=%d payload=%s", len(evt.Item), sanitizeLogText(previewForLog(string(evt.Item), 200)))
+			case agent.StreamEventCompleted:
+				llmLog.Debugf("<- stream chunk type=completed")
+			default:
+				llmLog.Debugf("<- stream chunk type=%s", evt.Type)
+			}
+			onEvent(evt)
 		})
 		cancel()
 		if err == nil {
@@ -359,6 +512,16 @@ func sanitizeLogText(text string) string {
 	text = strings.ReplaceAll(text, "\n", `\n`)
 	text = strings.ReplaceAll(text, "\r", `\r`)
 	return text
+}
+
+func previewForLog(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if limit < 3 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
 }
 
 func (e *Engine) startToolForwarder(ctx context.Context) {

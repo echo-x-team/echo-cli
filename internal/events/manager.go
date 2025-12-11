@@ -236,31 +236,28 @@ func (m *Manager) worker(ctx context.Context) {
 			})
 			continue
 		}
+		result := TaskResult{Status: "completed"}
 		if err := handler.Handle(ctx, sub, m.events); err != nil {
-			_ = m.events.Publish(ctx, Event{
-				Type:         EventError,
-				SubmissionID: sub.ID,
-				SessionID:    sub.SessionID,
-				Timestamp:    time.Now(),
-				Payload:      err.Error(),
-				Metadata:     sub.Metadata,
-			})
-			_ = m.events.Publish(ctx, Event{
-				Type:         EventTaskCompleted,
-				SubmissionID: sub.ID,
-				SessionID:    sub.SessionID,
-				Timestamp:    time.Now(),
-				Payload:      TaskResult{Status: "failed", Error: err.Error()},
-				Metadata:     sub.Metadata,
-			})
-			continue
+			if errors.Is(err, context.DeadlineExceeded) {
+				result.Status = "Done"
+			} else {
+				_ = m.events.Publish(ctx, Event{
+					Type:         EventError,
+					SubmissionID: sub.ID,
+					SessionID:    sub.SessionID,
+					Timestamp:    time.Now(),
+					Payload:      err.Error(),
+					Metadata:     sub.Metadata,
+				})
+				result = TaskResult{Status: "failed", Error: err.Error()}
+			}
 		}
 		_ = m.events.Publish(ctx, Event{
 			Type:         EventTaskCompleted,
 			SubmissionID: sub.ID,
 			SessionID:    sub.SessionID,
 			Timestamp:    time.Now(),
-			Payload:      TaskResult{Status: "completed"},
+			Payload:      result,
 			Metadata:     sub.Metadata,
 		})
 	}
