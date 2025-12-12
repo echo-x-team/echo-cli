@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -390,7 +391,7 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 		)
 	}
 	if len(output.items) > 0 {
-		if encoded, err := json.Marshal(output.items); err == nil {
+		if encoded, err := json.MarshalIndent(output.items, "", "  "); err == nil {
 			llmLog.Infof(
 				"<- items session=%s submission=%s model=%s count=%d payload=%s",
 				submission.SessionID,
@@ -454,8 +455,8 @@ func deriveFinalContent(fallback string, items []ResponseItem) string {
 }
 
 func logPrompt(submission events.Submission, prompt Prompt) {
-	if encoded, err := json.Marshal(prompt); err == nil {
-		llmLog.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, string(encoded))
+	if encoded, err := json.MarshalIndent(prompt, "", "  "); err == nil {
+		llmLog.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, sanitizeLogText(string(encoded)))
 	} else {
 		llmLog.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
 	}
@@ -607,6 +608,35 @@ func normalizeRawJSON(text string) json.RawMessage {
 	return json.RawMessage(encoded)
 }
 
+// prettyPayloadBytesForLog 尝试对 JSON bytes 做缩进美化，并在日志中保持单行输出。
+// limit <= 0 表示不截断。
+func prettyPayloadBytesForLog(raw []byte, limit int) string {
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 {
+		data = []byte("null")
+	}
+	if !json.Valid(data) {
+		quoted, err := json.Marshal(string(data))
+		if err != nil {
+			return "null"
+		}
+		data = quoted
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, data, "", "  "); err != nil {
+		pretty := string(data)
+		if limit > 0 {
+			pretty = previewForLog(pretty, limit)
+		}
+		return sanitizeLogText(pretty)
+	}
+	pretty := buf.String()
+	if limit > 0 {
+		pretty = previewForLog(pretty, limit)
+	}
+	return sanitizeLogText(pretty)
+}
+
 func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(agent.StreamEvent)) error {
 	messages := prompt.Messages
 	model := strings.TrimSpace(prompt.Model)
@@ -636,7 +666,7 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 			case agent.StreamEventTextDelta:
 				llmLog.Debugf("<- stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
 			case agent.StreamEventItem:
-				llmLog.Debugf("<- stream chunk type=item len=%d payload=%s", len(evt.Item), sanitizeLogText(previewForLog(string(evt.Item), 200)))
+				llmLog.Debugf("<- stream chunk type=item len=%d payload=%s", len(evt.Item), prettyPayloadBytesForLog(evt.Item, 200))
 			case agent.StreamEventCompleted:
 				llmLog.Debugf("<- stream chunk type=completed")
 			default:
