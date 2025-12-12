@@ -105,6 +105,7 @@ type Model struct {
 	search                   list.Model
 	sessions                 list.Model
 	messages                 []agent.Message
+	planUpdate               *tools.UpdatePlanArgs
 	eqCtx                    render.Context
 	eqRenderers              map[events.EventType]render.EventRenderer
 	streamIdx                int
@@ -251,6 +252,8 @@ func New(opts Options) *Model {
 	// TUI doesn't render submission.accepted into transcript because user input is
 	// already echoed locally. Still keep ActiveSub in sync.
 	m.eqRenderers[events.EventSubmissionAccepted] = tuiSubmissionAcceptedRenderer{}
+	// TUI renders plan.updated in a fixed section instead of appending to the transcript.
+	m.eqRenderers[events.EventPlanUpdated] = tuiPlanUpdatedRenderer{}
 	m.eqCtx.EmitLines = func(lines []string) {
 		if len(lines) == 0 {
 			return
@@ -515,6 +518,7 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	header := m.headerSection(m.width)
 	quick := m.quickHelpSection(m.width)
+	plan := m.planSection(m.width)
 	history := renderConversation(m.viewport.View(), m.conversationWidth())
 	composer := renderPane("Prompt", m.textarea.View(), m.width, m.textarea.Height())
 	status := m.statusLine(m.width)
@@ -534,6 +538,9 @@ func (m *Model) View() string {
 	sections := []string{header}
 	if quick != "" {
 		sections = append(sections, quick)
+	}
+	if plan != "" {
+		sections = append(sections, plan)
 	}
 	sections = append(sections, history, bottom)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -584,6 +591,24 @@ func (m *Model) quickHelpSection(width int) string {
 		return ""
 	}
 	return renderQuickHelp(width)
+}
+
+func (m *Model) planSection(width int) string {
+	if m.planUpdate == nil {
+		return ""
+	}
+	if width <= 0 {
+		width = 80
+	}
+	lines := tuirender.RenderPlanUpdate(*m.planUpdate, width)
+	if len(lines) == 0 {
+		return ""
+	}
+	body := strings.Join(tuirender.LinesToStrings(lines), "\n")
+	return lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(maxInt(20, width)).
+		Render(body)
 }
 
 // History returns a copy of the chat history.
@@ -746,6 +771,18 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 
 	// Then update TUI-specific pending/queue state.
 	switch evt.Type {
+	case events.EventPlanUpdated:
+		args, ok := evt.Payload.(tools.UpdatePlanArgs)
+		if !ok {
+			return nil
+		}
+		// Keep only the latest snapshot; updates replace previous content immediately.
+		next := tools.UpdatePlanArgs{
+			Explanation: args.Explanation,
+			Plan:        append([]tools.PlanItem(nil), args.Plan...),
+		}
+		m.planUpdate = &next
+		m.refreshTranscript() // plan section affects available viewport height
 	case events.EventAgentOutput:
 		msg, ok := evt.Payload.(events.AgentOutput)
 		if !ok || evt.SubmissionID != m.activeSub {
@@ -798,6 +835,14 @@ func (tuiSubmissionAcceptedRenderer) Handle(ctx *render.Context, evt events.Even
 		ctx.ActiveSub = evt.SubmissionID
 	}
 }
+
+// tuiPlanUpdatedRenderer suppresses transcript rendering for plan.updated.
+// The TUI displays the latest plan snapshot in a fixed section instead.
+type tuiPlanUpdatedRenderer struct{}
+
+func (tuiPlanUpdatedRenderer) Type() events.EventType { return events.EventPlanUpdated }
+
+func (tuiPlanUpdatedRenderer) Handle(*render.Context, events.Event) {}
 
 func approvalDescription(ev tools.ToolEvent) string {
 	switch ev.Result.Kind {
@@ -1141,6 +1186,7 @@ func (m *Model) conversationHeight(width int) int {
 
 	header := m.headerSection(width)
 	quick := m.quickHelpSection(width)
+	plan := m.planSection(width)
 	status := m.statusLine(width)
 	queue := renderQueuedPreview(m.queuedMessages, m.pending, width)
 	composer := renderPane("Prompt", m.textarea.View(), width, m.textarea.Height())
@@ -1155,7 +1201,7 @@ func (m *Model) conversationHeight(width int) int {
 	}
 	bottomParts = append(bottomParts, composer, hints)
 
-	reservedHeight := lipgloss.Height(header) + lipgloss.Height(quick) + lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, bottomParts...))
+	reservedHeight := lipgloss.Height(header) + lipgloss.Height(quick) + lipgloss.Height(plan) + lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, bottomParts...))
 	available := m.height - reservedHeight - conversationMarginBottom // renderConversation has a bottom margin
 	if available < 3 {
 		available = 3
@@ -1701,6 +1747,7 @@ func (m *Model) resetSession() {
 	m.resumeSessionID = ""
 	m.eqCtx.SessionID = ""
 	m.reviewMode = false
+	m.planUpdate = nil
 }
 
 func firstArg(args string) string {
