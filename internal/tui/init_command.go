@@ -78,7 +78,7 @@ func buildInitPrompt(workdir string) (string, error) {
 	if summary == "" {
 		return base, nil
 	}
-	return fmt.Sprintf("%s\n\nRepository scan:\n%s", base, summary), nil
+	return fmt.Sprintf("%s\n\n仓库扫描:\n%s", base, summary), nil
 }
 
 func summarizeRepository(workdir string) string {
@@ -88,13 +88,13 @@ func summarizeRepository(workdir string) string {
 	var parts []string
 
 	if module := readModuleName(workdir); module != "" {
-		parts = append(parts, fmt.Sprintf("- Go module: %s", module))
+		parts = append(parts, fmt.Sprintf("- Go 模块: %s", module))
 	}
 	if dirs := topLevelDirectories(workdir); len(dirs) > 0 {
-		parts = append(parts, fmt.Sprintf("- Top-level directories: %s", strings.Join(dirs, ", ")))
+		parts = append(parts, fmt.Sprintf("- 顶层目录: %s", strings.Join(dirs, ", ")))
 	}
 	if files := keyProjectFiles(workdir); len(files) > 0 {
-		parts = append(parts, fmt.Sprintf("- Notable files: %s", strings.Join(files, ", ")))
+		parts = append(parts, fmt.Sprintf("- 重要文件: %s", strings.Join(files, ", ")))
 	}
 
 	return strings.Join(parts, "\n")
@@ -143,7 +143,7 @@ func topLevelDirectories(workdir string) []string {
 	const maxDirs = 12
 	if len(dirs) > maxDirs {
 		remaining := len(dirs) - maxDirs
-		dirs = append(dirs[:maxDirs], fmt.Sprintf("+%d more", remaining))
+		dirs = append(dirs[:maxDirs], fmt.Sprintf("+%d 个其他目录", remaining))
 	}
 	return dirs
 }

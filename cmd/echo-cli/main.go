@@ -44,6 +44,11 @@ func main() {
 	} else if errCloser != nil {
 		defer errCloser.Close()
 	}
+	if llmCloser, _, err := execution.SetupLLMLog(execution.DefaultLLMLogPath); err != nil {
+		log.Warnf("failed to initialize llm log (%s): %v", execution.DefaultLLMLogPath, err)
+	} else if llmCloser != nil {
+		defer llmCloser.Close()
+	}
 
 	root, rest, err := parseRootArgs(os.Args[1:])
 	if err != nil {

@@ -82,16 +82,16 @@ func TestHandleInitCommandStartsStream(t *testing.T) {
 	}
 
 	content := gateway.lastInput[0].Content
-	if !strings.Contains(content, "Repository scan:") {
+	if !strings.Contains(content, "仓库扫描:") {
 		t.Fatalf("missing repository scan section: %q", content)
 	}
-	if !strings.Contains(content, "Go module: example.com/demo") {
+	if !strings.Contains(content, "Go 模块: example.com/demo") {
 		t.Fatalf("missing module line: %q", content)
 	}
-	if !strings.Contains(content, "Top-level directories: cmd, internal, pkg") {
+	if !strings.Contains(content, "顶层目录: cmd, internal, pkg") {
 		t.Fatalf("unexpected directories line: %q", content)
 	}
-	if !strings.Contains(content, "Notable files: README.md, go.mod") {
+	if !strings.Contains(content, "重要文件: README.md, go.mod") {
 		t.Fatalf("unexpected files line: %q", content)
 	}
 	if gateway.inputCtx.Metadata["target"] != "@internal/execution" {

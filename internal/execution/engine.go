@@ -23,6 +23,7 @@ type Options struct {
 	Bus            *events.Bus
 	Defaults       SessionDefaults
 	ErrorLogPath   string
+	LLMLogPath     string
 	ToolTimeout    time.Duration
 	RequestTimeout time.Duration
 	Retries        int
@@ -58,6 +59,7 @@ func NewEngine(opts Options) *Engine {
 		manager = events.NewManager(cfg)
 	}
 	ensureErrorLogger(opts.ErrorLogPath)
+	ensureLLMLogger(opts.LLMLogPath)
 	toolTimeout := opts.ToolTimeout
 	if toolTimeout == 0 {
 		toolTimeout = 2 * time.Minute
@@ -369,7 +371,47 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 		return modelTurnOutput{}, err
 	}
 
-	return collector.Result(), nil
+	output := collector.Result()
+	if text := strings.TrimSpace(output.fullResponse); text != "" {
+		llmLog.Infof(
+			"<- response session=%s submission=%s model=%s len=%d content=%s",
+			submission.SessionID,
+			submission.ID,
+			prompt.Model,
+			len(output.fullResponse),
+			sanitizeLogText(output.fullResponse),
+		)
+	} else {
+		llmLog.Infof(
+			"<- response session=%s submission=%s model=%s len=0",
+			submission.SessionID,
+			submission.ID,
+			prompt.Model,
+		)
+	}
+	if len(output.items) > 0 {
+		if encoded, err := json.Marshal(output.items); err == nil {
+			llmLog.Infof(
+				"<- items session=%s submission=%s model=%s count=%d payload=%s",
+				submission.SessionID,
+				submission.ID,
+				prompt.Model,
+				len(output.items),
+				sanitizeLogText(string(encoded)),
+			)
+		} else {
+			llmLog.Warnf(
+				"<- items session=%s submission=%s model=%s count=%d marshal_error=%v",
+				submission.SessionID,
+				submission.ID,
+				prompt.Model,
+				len(output.items),
+				err,
+			)
+		}
+	}
+
+	return output, nil
 }
 
 // identifyTools 负责从模型输出中识别工具标记并构造历史记录项（「工具识别」层）。
@@ -413,13 +455,13 @@ func deriveFinalContent(fallback string, items []ResponseItem) string {
 
 func logPrompt(submission events.Submission, prompt Prompt) {
 	if encoded, err := json.Marshal(prompt); err == nil {
-		log.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, string(encoded))
+		llmLog.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, string(encoded))
 	} else {
-		log.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
+		llmLog.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
 	}
-	log.Infof("messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
+	llmLog.Infof("messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
 	for i, msg := range prompt.Messages {
-		log.Infof("message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+		llmLog.Infof("message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 	}
 }
 
@@ -573,9 +615,20 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 	}
 	var lastErr error
 	for attempt := 0; attempt <= e.retries; attempt++ {
-		llmLog.Infof("-> request attempt=%d model=%s messages=%d", attempt+1, model, len(messages))
-		for i, msg := range messages {
-			llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+		llmLog.Infof(
+			"-> request attempt=%d model=%s messages=%d tools=%d parallel_tools=%t output_schema_len=%d",
+			attempt+1,
+			model,
+			len(messages),
+			len(prompt.Tools),
+			prompt.ParallelToolCalls,
+			len(strings.TrimSpace(prompt.OutputSchema)),
+		)
+		// 首次请求的提示词已由 logPrompt 记录，这里仅在重试时重复打印。
+		if attempt > 0 {
+			for i, msg := range messages {
+				llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+			}
 		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
 		err := e.client.Stream(ctxRun, prompt, func(evt agent.StreamEvent) {
