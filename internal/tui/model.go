@@ -14,7 +14,6 @@ import (
 	"echo-cli/internal/i18n"
 	"echo-cli/internal/logger"
 	"echo-cli/internal/policy"
-	"echo-cli/internal/render"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/search"
 	"echo-cli/internal/session"
@@ -106,8 +105,8 @@ type Model struct {
 	sessions                 list.Model
 	messages                 []agent.Message
 	planUpdate               *tools.UpdatePlanArgs
-	eqCtx                    render.Context
-	eqRenderers              map[events.EventType]render.EventRenderer
+	eqCtx                    tuirender.Context
+	eqRenderers              map[events.EventType]tuirender.EventRenderer
 	streamIdx                int
 	streamCh                 chan streamEvent
 	modelName                string
@@ -221,11 +220,11 @@ func New(opts Options) *Model {
 		eventsPane: evp,
 		search:     search,
 		sessions:   sessions,
-		eqCtx: render.Context{
+		eqCtx: tuirender.Context{
 			SessionID:  opts.ResumeSessionID,
 			Transcript: tuirender.NewTranscript(90),
 		},
-		eqRenderers:     render.DefaultRenderers(),
+		eqRenderers:     tuirender.DefaultRenderers(),
 		modelName:       opts.Model,
 		reasoning:       opts.Reasoning,
 		sandbox:         opts.Sandbox,
@@ -827,7 +826,7 @@ type tuiSubmissionAcceptedRenderer struct{}
 
 func (tuiSubmissionAcceptedRenderer) Type() events.EventType { return events.EventSubmissionAccepted }
 
-func (tuiSubmissionAcceptedRenderer) Handle(ctx *render.Context, evt events.Event) {
+func (tuiSubmissionAcceptedRenderer) Handle(ctx *tuirender.Context, evt events.Event) {
 	if ctx == nil {
 		return
 	}
@@ -842,7 +841,7 @@ type tuiPlanUpdatedRenderer struct{}
 
 func (tuiPlanUpdatedRenderer) Type() events.EventType { return events.EventPlanUpdated }
 
-func (tuiPlanUpdatedRenderer) Handle(*render.Context, events.Event) {}
+func (tuiPlanUpdatedRenderer) Handle(*tuirender.Context, events.Event) {}
 
 func approvalDescription(ev tools.ToolEvent) string {
 	switch ev.Result.Kind {

@@ -5,7 +5,6 @@ import (
 
 	"echo-cli/internal/events"
 	"echo-cli/internal/tools"
-	tuirender "echo-cli/internal/tui/render"
 )
 
 // toolEventRenderer renders tool.event into the transcript as non-persisted blocks.
@@ -28,7 +27,7 @@ func (toolEventRenderer) Handle(ctx *Context, evt events.Event) {
 	default:
 		return
 	}
-	block := tuirender.FormatToolEventBlock(toolEv)
+	block := FormatToolEventBlock(toolEv)
 	if strings.TrimSpace(block) == "" {
 		return
 	}
