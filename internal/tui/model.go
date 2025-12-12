@@ -1214,7 +1214,12 @@ func (m *Model) renderTranscriptLines() ([]string, []string) {
 	if width <= 0 {
 		width = 80
 	}
-	lines := tuirender.RenderMessages(m.messages, width)
+	var lines []tuirender.Line
+	if m.eqCtx.Transcript != nil {
+		lines = m.eqCtx.Transcript.RenderViewLines(width)
+	} else {
+		lines = tuirender.RenderMessages(m.messages, width)
+	}
 	if len(lines) == 0 {
 		lines = []tuirender.Line{{Spans: []tuirender.Span{{Text: "Welcome to Echo (Go). Type a message to start."}}}}
 	}
@@ -1237,7 +1242,7 @@ func (m *Model) logConversationSnapshot(lines []string) {
 }
 
 func (m *Model) copyConversation() {
-	if len(m.messages) == 0 {
+	if m.eqCtx.Transcript == nil && len(m.messages) == 0 {
 		m.logEvent("copy", "conversation is empty")
 		return
 	}
@@ -1245,7 +1250,12 @@ func (m *Model) copyConversation() {
 	if width <= 0 {
 		width = 80
 	}
-	lines := tuirender.RenderMessages(m.messages, width)
+	var lines []tuirender.Line
+	if m.eqCtx.Transcript != nil {
+		lines = m.eqCtx.Transcript.RenderViewLines(width)
+	} else {
+		lines = tuirender.RenderMessages(m.messages, width)
+	}
 	plain := tuirender.LinesToPlainStrings(lines)
 	text := strings.Join(plain, "\n")
 	if strings.TrimSpace(text) == "" {

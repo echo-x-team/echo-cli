@@ -342,7 +342,11 @@ func execMain(root rootArgs, args []string) {
 		emit(ev)
 	}
 
-	go forwardBusEvents(bus.Subscribe(), emitEvent)
+	// In JSON mode, mirror tool/approval events from the tool bus as JSONL too.
+	// In human mode, tool events should be rendered via EQ so the output stays coherent.
+	if jsonOutput {
+		go forwardBusEvents(bus.Subscribe(), emitEvent)
+	}
 
 	// 准备附件内容
 	attachments := []events.InputMessage{}

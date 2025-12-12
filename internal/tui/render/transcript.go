@@ -38,6 +38,8 @@ func (m messageRenderable) Render(area Rect, buf *Buffer) {
 		buf.WriteLines(renderUserLines(content, area.Width)...)
 	case agent.RoleAssistant:
 		buf.WriteLines(renderAssistantLines(content, area.Width)...)
+	case "tool":
+		buf.WriteLines(renderToolLines(content, area.Width)...)
 	default:
 		buf.WriteLines(StaticLines(wrapPlain(content, area.Width))...)
 	}
@@ -49,6 +51,8 @@ func (m messageRenderable) DesiredHeight(width int) int {
 		return len(renderUserLines(m.msg.Content, width))
 	case agent.RoleAssistant:
 		return len(renderAssistantLines(m.msg.Content, width))
+	case "tool":
+		return len(renderToolLines(m.msg.Content, width))
 	default:
 		return len(wrapPlain(m.msg.Content, width))
 	}
@@ -83,6 +87,19 @@ func renderAssistantLines(content string, width int) []Line {
 	return prefixed
 }
 
+func renderToolLines(content string, width int) []Line {
+	// Tool/event blocks are already "cell shaped" (contain their own bullets/indent).
+	// We just wrap them and dim to keep them visually distinct from user/assistant messages.
+	wrapWidth := width - 2
+	if wrapWidth < 1 {
+		wrapWidth = width
+	}
+	style := lipgloss.NewStyle().Faint(true)
+	body := wrapLines(content, wrapWidth, style)
+	// No prefix; keep the block compact.
+	return body
+}
+
 func wrapPlain(content string, width int) []Line {
 	return wrapLines(content, width, lipgloss.Style{})
 }
@@ -101,8 +118,12 @@ func wrapLines(content string, width int, style lipgloss.Style) []Line {
 
 // Transcript 维护消息列表并输出增量渲染结果。
 type Transcript struct {
-	width      int
-	messages   []agent.Message
+	width int
+	// history holds persisted conversation messages (user/assistant).
+	history []agent.Message
+	// view holds render entries for the transcript, including non-persisted blocks
+	// such as tool.event cells.
+	view       []agent.Message
 	lastRender []string
 }
 
@@ -127,7 +148,7 @@ func (t *Transcript) Messages() []agent.Message {
 	if t == nil {
 		return nil
 	}
-	return append([]agent.Message{}, t.messages...)
+	return append([]agent.Message{}, t.history...)
 }
 
 // LoadMessages replaces transcript content with provided messages.
@@ -136,7 +157,8 @@ func (t *Transcript) LoadMessages(msgs []agent.Message) {
 	if t == nil {
 		return
 	}
-	t.messages = append([]agent.Message{}, msgs...)
+	t.history = append([]agent.Message{}, msgs...)
+	t.view = append([]agent.Message{}, msgs...)
 	t.lastRender = nil
 }
 
@@ -145,42 +167,84 @@ func (t *Transcript) Reset() {
 	if t == nil {
 		return
 	}
-	t.messages = nil
+	t.history = nil
+	t.view = nil
 	t.lastRender = nil
 }
 
 // AppendUser 追加用户消息并返回增量行。
 func (t *Transcript) AppendUser(content string) []string {
-	t.messages = append(t.messages, agent.Message{Role: agent.RoleUser, Content: content})
+	msg := agent.Message{Role: agent.RoleUser, Content: content}
+	t.history = append(t.history, msg)
+	t.view = append(t.view, msg)
 	return t.renderDelta()
 }
 
 // AppendAssistantChunk 追加助手流式片段。
 func (t *Transcript) AppendAssistantChunk(chunk string) []string {
-	if len(t.messages) == 0 || t.messages[len(t.messages)-1].Role != agent.RoleAssistant {
-		t.messages = append(t.messages, agent.Message{Role: agent.RoleAssistant})
+	if len(t.history) == 0 || t.history[len(t.history)-1].Role != agent.RoleAssistant {
+		t.history = append(t.history, agent.Message{Role: agent.RoleAssistant})
 	}
-	t.messages[len(t.messages)-1].Content += chunk
+	t.history[len(t.history)-1].Content += chunk
+
+	// Mirror into view; ensure last view entry is assistant.
+	if len(t.view) == 0 || t.view[len(t.view)-1].Role != agent.RoleAssistant {
+		t.view = append(t.view, agent.Message{Role: agent.RoleAssistant})
+	}
+	t.view[len(t.view)-1].Content += chunk
 	return t.renderDelta()
 }
 
 // FinalizeAssistant 完成助手输出。
 func (t *Transcript) FinalizeAssistant(final string) []string {
-	if len(t.messages) == 0 || t.messages[len(t.messages)-1].Role != agent.RoleAssistant {
+	if len(t.history) == 0 || t.history[len(t.history)-1].Role != agent.RoleAssistant {
 		if final == "" {
 			return nil
 		}
-		t.messages = append(t.messages, agent.Message{Role: agent.RoleAssistant, Content: final})
+		msg := agent.Message{Role: agent.RoleAssistant, Content: final}
+		t.history = append(t.history, msg)
+		t.view = append(t.view, msg)
 		return t.renderDelta()
 	}
 	if final != "" {
-		t.messages[len(t.messages)-1].Content = final
+		t.history[len(t.history)-1].Content = final
+		// Mirror to view if last view entry is assistant, else append a new one.
+		if len(t.view) == 0 || t.view[len(t.view)-1].Role != agent.RoleAssistant {
+			t.view = append(t.view, agent.Message{Role: agent.RoleAssistant, Content: final})
+		} else {
+			t.view[len(t.view)-1].Content = final
+		}
 	}
 	return t.renderDelta()
 }
 
+// AppendToolBlock appends a non-persisted tool/event block to the transcript view.
+// The block is rendered with role="tool" and will not be returned by Messages().
+func (t *Transcript) AppendToolBlock(content string) []string {
+	if t == nil {
+		return nil
+	}
+	content = strings.TrimRight(content, "\n")
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	t.view = append(t.view, agent.Message{Role: "tool", Content: content})
+	return t.renderDelta()
+}
+
+// RenderViewLines renders the full transcript view (including tool blocks).
+func (t *Transcript) RenderViewLines(width int) []Line {
+	if t == nil {
+		return nil
+	}
+	if width <= 0 {
+		width = t.width
+	}
+	return RenderMessages(t.view, width)
+}
+
 func (t *Transcript) renderDelta() []string {
-	lines := LinesToStrings(RenderMessages(t.messages, t.width))
+	lines := LinesToStrings(RenderMessages(t.view, t.width))
 	start := 0
 	for start < len(lines) && start < len(t.lastRender) && t.lastRender[start] == lines[start] {
 		start++

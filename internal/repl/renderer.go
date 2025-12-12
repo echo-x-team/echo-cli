@@ -4,30 +4,45 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
-	"echo-cli/internal/render"
+	"echo-cli/internal/tools"
 	tuirender "echo-cli/internal/tui/render"
 )
 
-// EQRenderer 监听 EQ 事件并使用事件级渲染器增量输出。
-// 每个 EQ EventType 对应一个独立渲染器（见 internal/render）。
+// EQRenderer listens to EQ events and renders them to a terminal writer as history cells.
+// Compared to the older Transcript-based renderer, this keeps tool calls and other events
+// as first-class, self-contained blocks.
 type EQRenderer struct {
-	mu        sync.Mutex
-	ctx       render.Context
-	renderers map[events.EventType]render.EventRenderer
+	mu sync.Mutex
+
+	sessionID string
+	activeSub string
+	width     int
+	w         io.Writer
+
+	renderers map[events.EventType]EventCellRenderer
+
+	// Accumulate agent.output deltas so we can render a coherent final assistant cell
+	// without trying to do in-place terminal updates.
+	pendingAssistant map[string]*strings.Builder // submission_id -> text builder
 }
 
-// EQRendererOptions 配置增量渲染行为。
 type EQRendererOptions struct {
 	SessionID string
 	Width     int
 	Writer    io.Writer
 }
 
-// NewEQRenderer 创建 EQRenderer。
+// EventCellRenderer handles one EQ EventType and may emit one or more cells.
+type EventCellRenderer interface {
+	Type() events.EventType
+	Handle(r *EQRenderer, evt events.Event)
+}
+
 func NewEQRenderer(opts EQRendererOptions) *EQRenderer {
 	w := opts.Writer
 	if w == nil {
@@ -37,63 +52,187 @@ func NewEQRenderer(opts EQRendererOptions) *EQRenderer {
 	if width <= 0 {
 		width = 80
 	}
-	emit := func(lines []string) {
-		for _, line := range lines {
-			fmt.Fprintln(w, line)
-		}
+	r := &EQRenderer{
+		sessionID:        opts.SessionID,
+		width:            width,
+		w:                w,
+		renderers:        map[events.EventType]EventCellRenderer{},
+		pendingAssistant: map[string]*strings.Builder{},
 	}
-	return &EQRenderer{
-		ctx: render.Context{
-			SessionID:  opts.SessionID,
-			Transcript: tuirender.NewTranscript(width),
-			EmitLines:  emit,
-		},
-		renderers: render.DefaultRenderers(),
+	for _, rr := range defaultCellRenderers() {
+		r.renderers[rr.Type()] = rr
 	}
+	return r
 }
 
-// RegisterRenderer 允许上层注入或覆盖某个事件渲染器。
-func (r *EQRenderer) RegisterRenderer(renderer render.EventRenderer) {
+func (r *EQRenderer) RegisterRenderer(renderer EventCellRenderer) {
 	if renderer == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.renderers == nil {
-		r.renderers = map[events.EventType]render.EventRenderer{}
-	}
 	r.renderers[renderer.Type()] = renderer
 }
 
-// Handle 处理单条 EQ 事件并输出增量行。
 func (r *EQRenderer) Handle(evt events.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.ctx.SessionID != "" && evt.SessionID != r.ctx.SessionID {
+
+	if r.sessionID != "" && evt.SessionID != r.sessionID {
 		return
 	}
-	if renderer := r.renderers[evt.Type]; renderer != nil {
-		renderer.Handle(&r.ctx, evt)
+	if rr := r.renderers[evt.Type]; rr != nil {
+		rr.Handle(r, evt)
 	}
 }
 
-// AppendAssistant 用于直接追加完整助手消息（非 EQ 场景）。
+// AppendAssistant appends a full assistant message as a cell (non-EQ usage).
 func (r *EQRenderer) AppendAssistant(content string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ctx.Emit(r.ctx.Transcript.FinalizeAssistant(content))
+	r.emitCell(newAssistantCell(content))
 }
 
-// AppendMessages 允许批量追加消息并输出增量。
+// AppendMessages appends historical messages as cells (non-EQ usage).
 func (r *EQRenderer) AppendMessages(msgs []agent.Message) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, m := range msgs {
 		switch m.Role {
 		case agent.RoleUser:
-			r.ctx.Emit(r.ctx.Transcript.AppendUser(m.Content))
+			r.emitCell(newUserCell(m.Content))
 		case agent.RoleAssistant:
-			r.ctx.Emit(r.ctx.Transcript.FinalizeAssistant(m.Content))
+			r.emitCell(newAssistantCell(m.Content))
 		}
 	}
+}
+
+func (r *EQRenderer) emitCell(cell HistoryCell) {
+	if cell == nil {
+		return
+	}
+	lines := cell.Render(r.width)
+	for _, s := range tuirender.LinesToStrings(lines) {
+		fmt.Fprintln(r.w, s)
+	}
+}
+
+func (r *EQRenderer) assistantBuf(subID string) *strings.Builder {
+	if subID == "" {
+		subID = "_"
+	}
+	b := r.pendingAssistant[subID]
+	if b == nil {
+		b = &strings.Builder{}
+		r.pendingAssistant[subID] = b
+	}
+	return b
+}
+
+func (r *EQRenderer) clearAssistantBuf(subID string) {
+	delete(r.pendingAssistant, subID)
+}
+
+// --- Default cell renderers ---
+
+func defaultCellRenderers() []EventCellRenderer {
+	return []EventCellRenderer{
+		submissionAcceptedRenderer{},
+		agentOutputRenderer{},
+		planUpdatedRenderer{},
+		toolEventRenderer{},
+		taskErrorRenderer{},
+		// task.started / task.completed are currently no-op in human output.
+	}
+}
+
+type submissionAcceptedRenderer struct{}
+
+func (submissionAcceptedRenderer) Type() events.EventType { return events.EventSubmissionAccepted }
+
+func (submissionAcceptedRenderer) Handle(r *EQRenderer, evt events.Event) {
+	op, ok := evt.Payload.(events.Operation)
+	if !ok || op.Kind != events.OperationUserInput || op.UserInput == nil {
+		return
+	}
+	r.activeSub = evt.SubmissionID
+	for _, item := range op.UserInput.Items {
+		if item.Role != "user" {
+			continue
+		}
+		r.emitCell(newUserCell(item.Content))
+	}
+}
+
+type agentOutputRenderer struct{}
+
+func (agentOutputRenderer) Type() events.EventType { return events.EventAgentOutput }
+
+func (agentOutputRenderer) Handle(r *EQRenderer, evt events.Event) {
+	msg, ok := evt.Payload.(events.AgentOutput)
+	if !ok {
+		return
+	}
+	if r.activeSub != "" && evt.SubmissionID != r.activeSub {
+		return
+	}
+
+	// Buffer deltas; only render a single assistant cell when Final=true.
+	if !msg.Final {
+		if msg.Content != "" {
+			r.assistantBuf(evt.SubmissionID).WriteString(msg.Content)
+		}
+		return
+	}
+
+	finalText := msg.Content
+	if strings.TrimSpace(finalText) == "" {
+		finalText = r.assistantBuf(evt.SubmissionID).String()
+	}
+	r.clearAssistantBuf(evt.SubmissionID)
+	if strings.TrimSpace(finalText) != "" {
+		r.emitCell(newAssistantCell(finalText))
+	}
+	r.activeSub = ""
+}
+
+type planUpdatedRenderer struct{}
+
+func (planUpdatedRenderer) Type() events.EventType { return events.EventPlanUpdated }
+
+func (planUpdatedRenderer) Handle(r *EQRenderer, evt events.Event) {
+	args, ok := evt.Payload.(tools.UpdatePlanArgs)
+	if !ok {
+		return
+	}
+	r.emitCell(newPlanCell(args))
+}
+
+type toolEventRenderer struct{}
+
+func (toolEventRenderer) Type() events.EventType { return events.EventToolEvent }
+
+func (toolEventRenderer) Handle(r *EQRenderer, evt events.Event) {
+	tev, ok := evt.Payload.(tools.ToolEvent)
+	if !ok {
+		return
+	}
+	// In REPL human output, render key tool lifecycle events as their own blocks.
+	switch tev.Type {
+	case "approval.requested", "approval.completed", "item.started", "item.completed":
+		r.emitCell(newToolEventCell(tev))
+	}
+}
+
+type taskErrorRenderer struct{}
+
+func (taskErrorRenderer) Type() events.EventType { return events.EventError }
+
+func (taskErrorRenderer) Handle(r *EQRenderer, evt events.Event) {
+	msg := strings.TrimSpace(fmt.Sprint(evt.Payload))
+	if msg == "" {
+		return
+	}
+	// Reuse assistant styling for errors to keep output compact.
+	r.emitCell(newAssistantCell("error: " + msg))
 }

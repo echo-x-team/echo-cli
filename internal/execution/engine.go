@@ -43,10 +43,19 @@ type Engine struct {
 	toolTimeout    time.Duration
 	requestTimeout time.Duration
 	retries        int
+
+	toolCtxMu sync.Mutex
+	toolCtx   map[string]toolCallContext // tool call id -> submission context
 }
 
 type taskHandle struct {
 	cancel context.CancelFunc
+}
+
+type toolCallContext struct {
+	SubmissionID string
+	SessionID    string
+	Metadata     map[string]string
 }
 
 // NewEngine 构造一个新的执行引擎。
@@ -78,6 +87,7 @@ func NewEngine(opts Options) *Engine {
 		toolTimeout:    toolTimeout,
 		requestTimeout: reqTimeout,
 		retries:        opts.Retries,
+		toolCtx:        map[string]toolCallContext{},
 	}
 }
 
@@ -305,7 +315,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 	}
 
 	processed := e.identifyTools(output)
-	e.routeTools(output.markers, publishedMarkers)
+	e.routeTools(submission, output.markers, publishedMarkers)
 
 	results, err := e.executeTools(ctx, output.markers, toolEvents)
 	if err != nil {
@@ -439,8 +449,8 @@ func (e *Engine) identifyTools(output modelTurnOutput) []ProcessedResponseItem {
 }
 
 // routeTools 发布工具调用标记到总线（「工具路由」层）。
-func (e *Engine) routeTools(markers []tools.ToolCallMarker, publishedMarkers map[string]struct{}) {
-	e.dispatchToolMarkers(markers, publishedMarkers)
+func (e *Engine) routeTools(submission events.Submission, markers []tools.ToolCallMarker, publishedMarkers map[string]struct{}) {
+	e.dispatchToolMarkers(submission, markers, publishedMarkers)
 }
 
 // executeTools 等待工具执行结果并返回（「工具执行」层）。
@@ -742,12 +752,34 @@ func (e *Engine) startToolForwarder(ctx context.Context) {
 					continue
 				}
 				meta := map[string]string{"tool_kind": string(toolEvt.Result.Kind)}
+				// Best-effort: attach submission/session so EQ consumers can group tool events.
+				subID, sessID, subMeta := e.lookupToolCallContext(toolEvt.Result.ID)
+				if sessID == "" {
+					// If we can't associate to a session, still publish a tool.event for auditing,
+					// but session-scoped renderers will typically ignore it.
+				}
+				if subMeta != nil {
+					// Preserve submission metadata while keeping tool_kind explicit.
+					for k, v := range subMeta {
+						if _, exists := meta[k]; !exists {
+							meta[k] = v
+						}
+					}
+				}
 				_ = e.manager.PublishEvent(forwardCtx, events.Event{
-					Type:      events.EventToolEvent,
-					Timestamp: time.Now(),
-					Payload:   toolEvt,
-					Metadata:  meta,
+					Type: events.EventToolEvent,
+					// Tool events are correlated by tool call id; these IDs are optional but
+					// enable session/submission filtering and grouping for terminal renderers.
+					SubmissionID: subID,
+					SessionID:    sessID,
+					Timestamp:    time.Now(),
+					Payload:      toolEvt,
+					Metadata:     meta,
 				})
+
+				if toolEvt.Type == "item.completed" {
+					e.clearToolCallContext(toolEvt.Result.ID)
+				}
 			}
 		}
 	}()
@@ -869,7 +901,7 @@ func (e *Engine) collectToolResults(ctx context.Context, markers []tools.ToolCal
 	return ordered, nil
 }
 
-func (e *Engine) dispatchToolMarkers(markers []tools.ToolCallMarker, seen map[string]struct{}) {
+func (e *Engine) dispatchToolMarkers(submission events.Submission, markers []tools.ToolCallMarker, seen map[string]struct{}) {
 	if e.bus == nil || len(markers) == 0 {
 		return
 	}
@@ -883,8 +915,55 @@ func (e *Engine) dispatchToolMarkers(markers []tools.ToolCallMarker, seen map[st
 			}
 			seen[marker.ID] = struct{}{}
 		}
+		e.registerToolCallContext(submission, marker.ID)
 		e.bus.Publish(marker)
 	}
+}
+
+func (e *Engine) registerToolCallContext(submission events.Submission, callID string) {
+	if strings.TrimSpace(callID) == "" {
+		return
+	}
+	e.toolCtxMu.Lock()
+	e.toolCtx[callID] = toolCallContext{
+		SubmissionID: submission.ID,
+		SessionID:    submission.SessionID,
+		Metadata:     cloneMetadataMap(submission.Metadata),
+	}
+	e.toolCtxMu.Unlock()
+}
+
+func (e *Engine) lookupToolCallContext(callID string) (submissionID, sessionID string, meta map[string]string) {
+	if strings.TrimSpace(callID) == "" {
+		return "", "", nil
+	}
+	e.toolCtxMu.Lock()
+	ctx, ok := e.toolCtx[callID]
+	e.toolCtxMu.Unlock()
+	if !ok {
+		return "", "", nil
+	}
+	return ctx.SubmissionID, ctx.SessionID, cloneMetadataMap(ctx.Metadata)
+}
+
+func (e *Engine) clearToolCallContext(callID string) {
+	if strings.TrimSpace(callID) == "" {
+		return
+	}
+	e.toolCtxMu.Lock()
+	delete(e.toolCtx, callID)
+	e.toolCtxMu.Unlock()
+}
+
+func cloneMetadataMap(meta map[string]string) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	return out
 }
 
 func formatToolResults(results []tools.ToolResult) []agent.Message {
