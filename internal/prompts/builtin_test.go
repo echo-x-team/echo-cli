@@ -8,6 +8,7 @@ import (
 func TestBuiltinPromptsLoaded(t *testing.T) {
 	checks := []Name{
 		PromptCore,
+		PromptLanguage,
 		PromptGPT5Echo,
 		PromptReview,
 		PromptSandboxAssessment,

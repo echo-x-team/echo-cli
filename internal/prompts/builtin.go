@@ -14,6 +14,7 @@ type Name string
 
 const (
 	PromptCore                     Name = "core"
+	PromptLanguage                 Name = "language"
 	PromptGPT5Echo                 Name = "gpt-5-echo"
 	PromptGPT51                    Name = "gpt-5.1"
 	PromptGPT51EchoMax             Name = "gpt-5.1-echo-max"
@@ -33,6 +34,7 @@ const (
 
 var builtinFiles = map[Name]string{
 	PromptCore:                     "text/core_prompt.md",
+	PromptLanguage:                 "text/language_prompt.md",
 	PromptGPT5Echo:                 "text/gpt5_echo_prompt.md",
 	PromptGPT51:                    "text/gpt5_1_prompt.md",
 	PromptGPT51EchoMax:             "text/gpt5_1_echo_max_prompt.md",

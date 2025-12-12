@@ -67,35 +67,30 @@ func TestResolveReference(t *testing.T) {
 	}
 }
 
-func TestBuildLanguageInstruction(t *testing.T) {
-	zh := BuildLanguageInstruction("")
-	if !strings.HasPrefix(zh, "默认语言：中文") {
-		t.Fatalf("expected chinese directive when empty, got %q", zh)
+func TestBuildLanguagePrompt(t *testing.T) {
+	zh := BuildLanguagePrompt("")
+	if !IsLanguagePrompt(zh) || !strings.Contains(zh, "中文") {
+		t.Fatalf("expected chinese language prompt, got %q", zh)
 	}
-	en := BuildLanguageInstruction(i18n.LanguageEnglish)
-	if !strings.HasPrefix(en, "Default language: English") {
-		t.Fatalf("expected english directive, got %q", en)
+	en := BuildLanguagePrompt(i18n.LanguageEnglish)
+	if !strings.Contains(en, "English") {
+		t.Fatalf("expected english language prompt, got %q", en)
 	}
-	fr := BuildLanguageInstruction(i18n.Language("fr"))
+	fr := BuildLanguagePrompt(i18n.Language("fr"))
 	if !strings.Contains(fr, "fr") {
 		t.Fatalf("expected to mention raw language code, got %q", fr)
 	}
 }
 
-func TestHasLanguageInstruction(t *testing.T) {
-	if HasLanguageInstruction("") {
-		t.Fatalf("empty string should not contain language directive")
+func TestIsLanguagePrompt(t *testing.T) {
+	if IsLanguagePrompt("") {
+		t.Fatalf("empty string should not match language prompt")
 	}
-	if !HasLanguageInstruction("默认语言：中文。按此回复") {
-		t.Fatalf("failed to detect chinese directive")
+	sample := BuildLanguagePrompt(i18n.LanguageChinese)
+	if !IsLanguagePrompt(sample) {
+		t.Fatalf("should detect rendered language prompt")
 	}
-	if !HasLanguageInstruction("  Default language: English. Keep it.") {
-		t.Fatalf("failed to detect english directive with leading spaces")
-	}
-	if !HasLanguageInstruction("system intro\nDefault language: English.") {
-		t.Fatalf("failed to detect directive when not at prefix")
-	}
-	if HasLanguageInstruction("language: zh") {
-		t.Fatalf("false positive for non-directive text")
+	if IsLanguagePrompt("language: zh") {
+		t.Fatalf("false positive for unrelated text")
 	}
 }

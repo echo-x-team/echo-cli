@@ -1,10 +1,6 @@
 package prompts
 
-import (
-	"strings"
-
-	"echo-cli/internal/i18n"
-)
+import "strings"
 
 const (
 	// OutputSchemaPrefix 用于提示模型遵循给定的输出模式。
@@ -12,9 +8,6 @@ const (
 
 	reasoningEffortPrefix = "推理强度："
 	legacyReasoningPrefix = "Reasoning effort:"
-
-	languagePrefix       = "默认语言："
-	legacyLanguagePrefix = "Default language:"
 )
 
 // ReviewModeSystemPrompt 是代码审查模式下的系统提示词，由内置中文审查提示词提供。
@@ -44,28 +37,6 @@ func ExtractReasoningEffort(text string) string {
 		}
 	}
 	return ""
-}
-
-// BuildLanguageInstruction 构造默认语言指令，未指定语言时回退到中文。
-func BuildLanguageInstruction(lang i18n.Language) string {
-	resolved := i18n.Normalize(lang.Code())
-	switch resolved {
-	case i18n.LanguageChinese:
-		return languagePrefix + "中文。使用该语言回复，若用户指定其他语言则优先按照用户的选择。"
-	default:
-		name := resolved.DisplayName()
-		return legacyLanguagePrefix + " " + name + ". Respond in this language unless the user explicitly requests another."
-	}
-}
-
-// HasLanguageInstruction 检查文本是否包含默认语言指令前缀。
-func HasLanguageInstruction(text string) bool {
-	if text == "" {
-		return false
-	}
-	trimmed := strings.TrimSpace(text)
-	lower := strings.ToLower(trimmed)
-	return strings.Contains(trimmed, languagePrefix) || strings.Contains(lower, strings.ToLower(legacyLanguagePrefix))
 }
 
 const internalPrefix = "@internal/prompts/"

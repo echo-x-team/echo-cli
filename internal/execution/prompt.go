@@ -36,6 +36,7 @@ func (ctx TurnContext) BuildPrompt() Prompt {
 //
 // 2. Attachments（附件内容）：文件、图片等上下文信息
 // 3. History messages（历史消息）：之前的对话记录
+// 4. Language prompt（输出语言提示词）：在消息末尾附加，默认中文，可根据配置切换
 //
 // 特性：
 // - 统一管理所有提示词注入，避免分散处理
@@ -50,26 +51,21 @@ func (ctx TurnContext) BuildPrompt() Prompt {
 // 返回值：
 //   - []agent.Message: 按正确顺序排列的消息列表
 func (ctx TurnContext) BuildMessages() []agent.Message {
-	// 计算初始容量：系统消息(最多5条) + 附件 + 历史消息
-	capacity := len(ctx.History) + len(ctx.Attachments) + 5
+	// 计算初始容量：系统消息(最多6条) + 附件 + 历史消息
+	capacity := len(ctx.History) + len(ctx.Attachments) + 6
 	messages := make([]agent.Message, 0, capacity)
 
 	// 解析指令列表，支持 @internal/prompts 引用
 	// 将指令中的引用（如 "@default/tool-use"）解析为实际内容
 	instructions := resolveInstructions(ctx.Instructions)
+	instructions = filterLanguagePrompts(instructions)
 
 	// 解析系统提示词，同样支持引用
 	system := resolveSystemPrompt(ctx.System)
-
-	// 注入默认语言要求，确保所有提示词遵循配置的语言。
-	language := i18n.Normalize(ctx.Language)
-	if directive := prompts.BuildLanguageInstruction(language); directive != "" && !hasLanguageInstruction(ctx.History, instructions, system) {
-		if system == "" {
-			system = directive
-		} else {
-			system = strings.TrimSpace(system + "\n\n" + directive)
-		}
+	if prompts.IsLanguagePrompt(system) {
+		system = defaultSystemPrompt()
 	}
+	languagePrompt := prompts.BuildLanguagePrompt(i18n.Normalize(ctx.Language))
 
 	// === 系统消息构建部分 ===
 
@@ -115,6 +111,11 @@ func (ctx TurnContext) BuildMessages() []agent.Message {
 	// === 历史对话部分 ===
 	// 添加纯对话历史，包含用户和助手之间的历史交互
 	messages = append(messages, ctx.History...)
+
+	// 追加语言提示词，确保最终消息带有输出语言要求。
+	if promptText := strings.TrimSpace(languagePrompt); promptText != "" {
+		messages = append(messages, agent.Message{Role: agent.RoleSystem, Content: promptText})
+	}
 
 	return messages
 }
@@ -275,20 +276,16 @@ func hasReasoningEffort(history []agent.Message, instructions []string, system s
 	return false
 }
 
-// hasLanguageInstruction 检查提示中是否已包含默认语言指令，避免重复注入。
-func hasLanguageInstruction(history []agent.Message, instructions []string, system string) bool {
-	if prompts.HasLanguageInstruction(system) {
-		return true
+func filterLanguagePrompts(instructions []string) []string {
+	if len(instructions) == 0 {
+		return instructions
 	}
+	out := make([]string, 0, len(instructions))
 	for _, item := range instructions {
-		if prompts.HasLanguageInstruction(item) {
-			return true
+		if prompts.IsLanguagePrompt(item) {
+			continue
 		}
+		out = append(out, item)
 	}
-	for _, msg := range history {
-		if msg.Role == agent.RoleSystem && prompts.HasLanguageInstruction(msg.Content) {
-			return true
-		}
-	}
-	return false
+	return out
 }

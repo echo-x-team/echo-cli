@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
+	"echo-cli/internal/prompts"
 	"echo-cli/internal/tools"
 )
 
@@ -432,6 +434,90 @@ done:
 	}
 }
 
+func TestEngineAddsLanguageDirectiveEveryModelCall(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	bus := events.NewBus()
+	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 2})
+	client := &recordingLanguageModelClient{}
+	engine := NewEngine(Options{
+		Manager:     manager,
+		Client:      client,
+		Bus:         bus,
+		Defaults:    SessionDefaults{Model: "gpt-test"},
+		ToolTimeout: time.Second,
+	})
+
+	engine.Start(ctx)
+	defer engine.Close()
+
+	go func() {
+		sub := bus.Subscribe()
+		for evt := range sub {
+			marker, ok := evt.(tools.ToolCallMarker)
+			if !ok || marker.ID != "lang-1" {
+				continue
+			}
+			bus.Publish(tools.ToolEvent{
+				Type: "item.completed",
+				Result: tools.ToolResult{
+					ID:     marker.ID,
+					Kind:   tools.ToolCommand,
+					Status: "completed",
+					Output: "done",
+				},
+			})
+			return
+		}
+	}()
+
+	eventsCh := engine.Events()
+	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-lang"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for done := false; !done; {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for language directive verification")
+		case ev := <-eventsCh:
+			if ev.SubmissionID != subID {
+				continue
+			}
+			switch ev.Type {
+			case events.EventError:
+				t.Fatalf("unexpected error payload: %v", ev.Payload)
+			case events.EventTaskCompleted:
+				done = true
+			}
+		}
+	}
+
+	recorded := client.Prompts()
+	if len(recorded) < 2 {
+		t.Fatalf("expected multiple model calls, got %d", len(recorded))
+	}
+	for i, prompt := range recorded {
+		if !containsChineseLanguagePrompt(prompt.Messages) {
+			t.Fatalf("prompt %d missing default chinese language prompt at tail", i)
+		}
+	}
+}
+
+func containsChineseLanguagePrompt(msgs []agent.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != agent.RoleSystem {
+		return false
+	}
+	return prompts.IsLanguagePrompt(last.Content) && strings.Contains(last.Content, "中文")
+}
+
 type fakeModelClient struct {
 	chunks []string
 }
@@ -566,4 +652,44 @@ func (c *responseItemModelClient) Stream(ctx context.Context, _ agent.Prompt, on
 	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final via item"})
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
+}
+
+type recordingLanguageModelClient struct {
+	mu      sync.Mutex
+	prompts []agent.Prompt
+	calls   int
+}
+
+func (c *recordingLanguageModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
+	return "", nil
+}
+
+func (c *recordingLanguageModelClient) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
+	c.mu.Lock()
+	c.prompts = append(c.prompts, prompt)
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	if call == 1 {
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"command","id":"lang-1","args":{"command":"echo hi"}}`})
+	} else {
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final language check"})
+	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	return nil
+}
+
+func (c *recordingLanguageModelClient) Prompts() []agent.Prompt {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]agent.Prompt, len(c.prompts))
+	copy(out, c.prompts)
+	return out
 }
