@@ -1,17 +1,12 @@
 # echo-cli (Go + Bubble Tea)
 
+[English](README.md) | [日本語](readme-jp.md) | [中文](readme-cn.md)
+
 Echo Team command-line + TUI client built in Go and Bubble Tea, designed to deliver a capable local agent experience.
 
-## Introduction / 简介 / 紹介
+## Overview
 
-### English
-echo-cli is a Go-based CLI/TUI client for Echo Team. It is built to provide a powerful local agent experience, uses Bubble Tea for the terminal UI, and currently focuses on the M1 scaffold: CLI entry, config loader, basic TUI, and chat without tool execution.
-
-### 中文
-echo-cli 是一个用 Go 编写的 Echo 团队命令行与终端 UI 客户端，旨在提供强大的本地智能体体验，终端界面基于 Bubble Tea。当前处于 M1 脚手架阶段，包含 CLI 入口、配置加载、基础 TUI，以及不含工具执行的聊天功能。
-
-### 日本語
-echo-cli は Go 製の Echo Team 向け CLI/TUI クライアントで、強力なローカルエージェント体験を提供することを目指し、ターミナル UI には Bubble Tea を採用しています。現状は M1 のスキャフォールド段階で、CLI エントリ、設定読み込み、基本的な TUI、ツール実行なしのチャットを提供しています。
+echo-cli is a Go-based CLI/TUI client for Echo Team. It uses Bubble Tea for the terminal UI and currently focuses on the M1 scaffold: CLI entry, config loader, basic TUI, and chat without tool execution.
 
 ## Current Status
 
