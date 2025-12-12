@@ -74,23 +74,24 @@ func patchPathsSafe(root string, diff string, roots []string) (bool, string) {
 	if len(roots) > 0 {
 		root = roots[len(roots)-1]
 	}
-	lines := strings.Split(diff, "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- ") {
-			path := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "--- "))
-			if path == "" || path == "/dev/null" {
-				continue
-			}
-			if strings.HasPrefix(path, "/") {
-				if !withinRoots(path, roots) {
-					return false, defaultReason
-				}
-				continue
-			}
-			clean := filepath.Clean(filepath.Join(root, path))
-			if !withinRoots(clean, roots) {
+	paths, err := tools.ExtractPatchPaths(diff)
+	if err != nil || len(paths) == 0 {
+		return false, "patch missing file paths"
+	}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || path == "/dev/null" {
+			continue
+		}
+		if filepath.IsAbs(path) {
+			if !withinRoots(path, roots) {
 				return false, defaultReason
 			}
+			continue
+		}
+		clean := filepath.Clean(filepath.Join(root, path))
+		if !withinRoots(clean, roots) {
+			return false, defaultReason
 		}
 	}
 	return true, ""
