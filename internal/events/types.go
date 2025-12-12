@@ -71,6 +71,8 @@ const (
 	EventAgentOutput        EventType = "agent.output"
 	EventError              EventType = "task.error"
 	EventToolEvent          EventType = "tool.event"
+	// EventPlanUpdated 表示 update_plan 工具成功后生成的新计划快照。
+	EventPlanUpdated EventType = "plan.updated"
 )
 
 // AgentOutput 表示智能体的输出（可流式）。
@@ -87,7 +89,8 @@ type TaskResult struct {
 	Error  string
 }
 
-// Event 是 EQ 中传递的消息。
+// Event 是 EQ 中传递的唯一消息格式。
+// Payload 的具体结构由 Type 决定；详见 docs/EQ_EVENTS.md。
 type Event struct {
 	Type         EventType
 	SubmissionID string

@@ -259,6 +259,83 @@ done:
 	}
 }
 
+func TestEngineEmitsPlanUpdatedEventOnUpdatePlanToolSuccess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	bus := events.NewBus()
+	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 1})
+	client := &planToolLoopModelClient{}
+	engine := NewEngine(Options{
+		Manager:     manager,
+		Client:      client,
+		Bus:         bus,
+		Defaults:    SessionDefaults{Model: "gpt-test"},
+		ToolTimeout: time.Second,
+	})
+
+	engine.Start(ctx)
+	defer engine.Close()
+
+	// Simulate tool dispatcher completing update_plan.
+	go func() {
+		sub := bus.Subscribe()
+		for evt := range sub {
+			marker, ok := evt.(tools.ToolCallMarker)
+			if !ok || marker.ID != "plan-1" {
+				continue
+			}
+			bus.Publish(tools.ToolEvent{
+				Type: "item.completed",
+				Result: tools.ToolResult{
+					ID:          marker.ID,
+					Kind:        tools.ToolPlanUpdate,
+					Status:      "completed",
+					Explanation: "because",
+					Plan: []tools.PlanItem{
+						{Step: "do x", Status: "pending"},
+					},
+				},
+			})
+			return
+		}
+	}()
+
+	eventsCh := engine.Events()
+	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-plan"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	var planEvt events.Event
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for plan.updated event")
+		case ev := <-eventsCh:
+			if ev.SubmissionID != subID {
+				continue
+			}
+			if ev.Type == events.EventPlanUpdated {
+				planEvt = ev
+				goto done
+			}
+		}
+	}
+
+done:
+	args, ok := planEvt.Payload.(tools.UpdatePlanArgs)
+	if !ok {
+		t.Fatalf("unexpected plan.updated payload type %T", planEvt.Payload)
+	}
+	if strings.TrimSpace(args.Explanation) != "because" {
+		t.Fatalf("unexpected explanation: %q", args.Explanation)
+	}
+	if len(args.Plan) != 1 || args.Plan[0].Step != "do x" || args.Plan[0].Status != "pending" {
+		t.Fatalf("unexpected plan: %+v", args.Plan)
+	}
+}
+
 func TestEngineDispatchesMarkersAfterFullResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -583,6 +660,31 @@ func (c *toolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEven
 		return nil
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final answer after tool"})
+	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	return nil
+}
+
+type planToolLoopModelClient struct {
+	calls int
+}
+
+func (c *planToolLoopModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
+	return "", nil
+}
+
+func (c *planToolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
+	c.calls++
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if c.calls == 1 {
+		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"update_plan","id":"plan-1","args":{"explanation":"because","plan":[{"step":"do x","status":"pending"}]}}`})
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+		return nil
+	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final after plan"})
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }

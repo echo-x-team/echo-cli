@@ -320,6 +320,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 	for _, res := range results {
 		e.logToolResultError(submission, turnCtx, *seq, res)
 	}
+	e.publishPlanUpdates(ctx, submission, results, emit)
 	processed = append(processed, processedFromToolResults(results)...)
 
 	responses, itemsToRecord := processItems(processed)
@@ -928,6 +929,30 @@ func formatPlanResult(res tools.ToolResult) string {
 		sb.WriteString(fmt.Sprintf("\n- [%s] %s", icon, item.Step))
 	}
 	return sb.String()
+}
+
+// publishPlanUpdates emits a dedicated EQ event for successful update_plan tool results.
+// This mirrors codex-rs EventMsg::PlanUpdate: the plan is treated as the latest snapshot.
+func (e *Engine) publishPlanUpdates(ctx context.Context, submission events.Submission, results []tools.ToolResult, emit events.EventPublisher) {
+	for _, res := range results {
+		if res.Kind != tools.ToolPlanUpdate {
+			continue
+		}
+		if res.Error != "" || res.Status == "error" {
+			continue
+		}
+		_ = emit.Publish(ctx, events.Event{
+			Type:         events.EventPlanUpdated,
+			SubmissionID: submission.ID,
+			SessionID:    submission.SessionID,
+			Timestamp:    time.Now(),
+			Payload: tools.UpdatePlanArgs{
+				Explanation: strings.TrimSpace(res.Explanation),
+				Plan:        res.Plan,
+			},
+			Metadata: submission.Metadata,
+		})
+	}
 }
 
 // processItems mirrors the codex.rs process_items helper: collect tool responses for the next turn
