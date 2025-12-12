@@ -118,7 +118,7 @@ func root() *logrus.Logger {
 	return rootLogger
 }
 
-// PlainFormatter 统一输出格式：[timestamp] [LEVEL] [component] caller message fields。
+// PlainFormatter 统一输出格式：caller [timestamp] [LEVEL] [component] [type=...] message fields。
 type PlainFormatter struct{}
 
 // Format 实现 logrus Formatter。
@@ -132,10 +132,21 @@ func (PlainFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	if val, ok := entry.Data["component"].(string); ok && val != "" {
 		component = val
 	}
+	typeVal, hasType := entry.Data["type"]
+	typ := ""
+	if hasType {
+		if typeVal == nil {
+			typ = "<nil>"
+		} else if s, ok := typeVal.(string); ok {
+			typ = s
+		} else {
+			typ = fmt.Sprint(typeVal)
+		}
+	}
 	caller := formatCaller(entry)
 	fields := formatFields(entry.Data)
 
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 7)
 	if caller != "" {
 		parts = append(parts, caller)
 	}
@@ -143,6 +154,9 @@ func (PlainFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	parts = append(parts, fmt.Sprintf("[%s]", level))
 	if component != "" {
 		parts = append(parts, fmt.Sprintf("[%s]", component))
+	}
+	if hasType {
+		parts = append(parts, fmt.Sprintf("[type=%s]", typ))
 	}
 	parts = append(parts, entry.Message)
 	if fields != "" {
@@ -170,7 +184,7 @@ func formatFields(fields logrus.Fields) string {
 	}
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
-		if k == "component" || k == "caller" {
+		if k == "component" || k == "caller" || k == "type" {
 			continue
 		}
 		keys = append(keys, k)
