@@ -374,9 +374,10 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 	}
 
 	output := collector.Result()
+	in := llmIn()
 	if text := strings.TrimSpace(output.fullResponse); text != "" {
-		llmLog.Infof(
-			"<- response session=%s submission=%s model=%s len=%d content=%s",
+		in.Infof(
+			"llm->agent response session=%s submission=%s model=%s len=%d content=%s",
 			submission.SessionID,
 			submission.ID,
 			prompt.Model,
@@ -384,8 +385,8 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 			sanitizeLogText(output.fullResponse),
 		)
 	} else {
-		llmLog.Infof(
-			"<- response session=%s submission=%s model=%s len=0",
+		in.Infof(
+			"llm->agent response session=%s submission=%s model=%s len=0",
 			submission.SessionID,
 			submission.ID,
 			prompt.Model,
@@ -393,8 +394,8 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 	}
 	if len(output.items) > 0 {
 		if encoded, err := json.MarshalIndent(output.items, "", "  "); err == nil {
-			llmLog.Infof(
-				"<- items session=%s submission=%s model=%s count=%d payload=%s",
+			in.Infof(
+				"llm->agent items session=%s submission=%s model=%s count=%d payload=%s",
 				submission.SessionID,
 				submission.ID,
 				prompt.Model,
@@ -402,8 +403,8 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 				sanitizeLogText(string(encoded)),
 			)
 		} else {
-			llmLog.Warnf(
-				"<- items session=%s submission=%s model=%s count=%d marshal_error=%v",
+			in.Warnf(
+				"llm->agent items session=%s submission=%s model=%s count=%d marshal_error=%v",
 				submission.SessionID,
 				submission.ID,
 				prompt.Model,
@@ -455,15 +456,29 @@ func deriveFinalContent(fallback string, items []ResponseItem) string {
 	return finalContent
 }
 
+const (
+	llmDirAgentToLLM = "agent->llm"
+	llmDirLLMToAgent = "llm->agent"
+)
+
+func llmOut() *logger.LogEntry {
+	return llmLog.WithField("dir", llmDirAgentToLLM)
+}
+
+func llmIn() *logger.LogEntry {
+	return llmLog.WithField("dir", llmDirLLMToAgent)
+}
+
 func logPrompt(submission events.Submission, prompt Prompt) {
+	out := llmOut()
 	if encoded, err := json.MarshalIndent(prompt, "", "  "); err == nil {
-		llmLog.Infof("prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, sanitizeLogText(string(encoded)))
+		out.Infof("agent->llm prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, sanitizeLogText(string(encoded)))
 	} else {
-		llmLog.Warnf("prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
+		out.Warnf("agent->llm prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
 	}
-	llmLog.Infof("messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
+	out.Infof("agent->llm messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
 	for i, msg := range prompt.Messages {
-		llmLog.Infof("message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+		out.Infof("agent->llm message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 	}
 }
 
@@ -639,6 +654,8 @@ func prettyPayloadBytesForLog(raw []byte, limit int) string {
 }
 
 func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(agent.StreamEvent)) error {
+	out := llmOut()
+	in := llmIn()
 	messages := prompt.Messages
 	model := strings.TrimSpace(prompt.Model)
 	if model == "" {
@@ -646,8 +663,8 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 	}
 	var lastErr error
 	for attempt := 0; attempt <= e.retries; attempt++ {
-		llmLog.Infof(
-			"-> request attempt=%d model=%s messages=%d tools=%d parallel_tools=%t output_schema_len=%d",
+		out.Infof(
+			"agent->llm request attempt=%d model=%s messages=%d tools=%d parallel_tools=%t output_schema_len=%d",
 			attempt+1,
 			model,
 			len(messages),
@@ -658,29 +675,29 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 		// 首次请求的提示词已由 logPrompt 记录，这里仅在重试时重复打印。
 		if attempt > 0 {
 			for i, msg := range messages {
-				llmLog.Infof("-> message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+				out.Infof("agent->llm message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
 			}
 		}
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
 		err := e.client.Stream(ctxRun, prompt, func(evt agent.StreamEvent) {
 			switch evt.Type {
 			case agent.StreamEventTextDelta:
-				llmLog.Debugf("<- stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
+				in.Debugf("llm->agent stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
 			case agent.StreamEventItem:
-				llmLog.Debugf("<- stream chunk type=item len=%d payload=%s", len(evt.Item), prettyPayloadBytesForLog(evt.Item, 200))
+				in.Debugf("llm->agent stream chunk type=item len=%d payload=%s", len(evt.Item), prettyPayloadBytesForLog(evt.Item, 200))
 			case agent.StreamEventCompleted:
-				llmLog.Debugf("<- stream chunk type=completed")
+				in.Debugf("llm->agent stream chunk type=completed")
 			default:
-				llmLog.Debugf("<- stream chunk type=%s", evt.Type)
+				in.Debugf("llm->agent stream chunk type=%s", evt.Type)
 			}
 			onEvent(evt)
 		})
 		cancel()
 		if err == nil {
-			llmLog.Infof("<- stream completed attempt=%d model=%s", attempt+1, model)
+			in.Infof("llm->agent stream completed attempt=%d model=%s", attempt+1, model)
 			return nil
 		}
-		llmLog.Errorf("!! error attempt=%d model=%s err=%v", attempt+1, model, err)
+		in.Errorf("llm->agent error attempt=%d model=%s err=%v", attempt+1, model, err)
 		lastErr = err
 	}
 	return lastErr
