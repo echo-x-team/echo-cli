@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"echo-cli/internal/agent"
 	"echo-cli/internal/instructions"
 	"echo-cli/internal/prompts"
 
@@ -18,8 +17,7 @@ import (
 // handleInitCommand 触发 /init：若不存在 AGENTS.md，则提交生成提示词，避免并发与覆盖。
 func (m *Model) handleInitCommand() tea.Cmd {
 	if m.pending {
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Cannot run /init while another request is in progress."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Cannot run /init while another request is in progress.")
 		return nil
 	}
 
@@ -28,8 +26,7 @@ func (m *Model) handleInitCommand() tea.Cmd {
 		workdir, _ = os.Getwd()
 	}
 	if workdir == "" {
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Working directory is not set; cannot run /init."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Working directory is not set; cannot run /init.")
 		return nil
 	}
 
@@ -39,26 +36,22 @@ func (m *Model) handleInitCommand() tea.Cmd {
 		if info.IsDir() {
 			kind = "directory"
 		}
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("Skipping /init: %s already exists (%s).", target, kind)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("Skipping /init: %s already exists (%s).", target, kind))
 		return nil
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("Cannot run /init: %v", err)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("Cannot run /init: %v", err))
 		return nil
 	}
 
 	prompt, err := buildInitPrompt(workdir)
 	if err != nil {
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("Init prompt unavailable: %v", err)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("Init prompt unavailable: %v", err))
 		return nil
 	}
 
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: prompt})
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+	m.appendUserMessage(prompt)
+	m.appendAssistantPlaceholder()
 	m.streamIdx = len(m.messages) - 1
-	m.refreshTranscript()
 	m.pending = true
 	m.setComposerHeight()
 	ctx := m.defaultInputContext()

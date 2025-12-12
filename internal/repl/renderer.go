@@ -8,16 +8,16 @@ import (
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
-	"echo-cli/internal/tui/render"
+	"echo-cli/internal/render"
+	tuirender "echo-cli/internal/tui/render"
 )
 
-// EQRenderer 监听 EQ 事件并使用 TUI 渲染模块增量输出。
+// EQRenderer 监听 EQ 事件并使用事件级渲染器增量输出。
+// 每个 EQ EventType 对应一个独立渲染器（见 internal/render）。
 type EQRenderer struct {
-	mu         sync.Mutex
-	sessionID  string
-	activeSub  string
-	transcript *render.Transcript
-	writer     io.Writer
+	mu        sync.Mutex
+	ctx       render.Context
+	renderers map[events.EventType]render.EventRenderer
 }
 
 // EQRendererOptions 配置增量渲染行为。
@@ -37,74 +37,43 @@ func NewEQRenderer(opts EQRendererOptions) *EQRenderer {
 	if width <= 0 {
 		width = 80
 	}
-	return &EQRenderer{
-		sessionID:  opts.SessionID,
-		transcript: render.NewTranscript(width),
-		writer:     w,
+	emit := func(lines []string) {
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
 	}
+	return &EQRenderer{
+		ctx: render.Context{
+			SessionID:  opts.SessionID,
+			Transcript: tuirender.NewTranscript(width),
+			EmitLines:  emit,
+		},
+		renderers: render.DefaultRenderers(),
+	}
+}
+
+// RegisterRenderer 允许上层注入或覆盖某个事件渲染器。
+func (r *EQRenderer) RegisterRenderer(renderer render.EventRenderer) {
+	if renderer == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.renderers == nil {
+		r.renderers = map[events.EventType]render.EventRenderer{}
+	}
+	r.renderers[renderer.Type()] = renderer
 }
 
 // Handle 处理单条 EQ 事件并输出增量行。
 func (r *EQRenderer) Handle(evt events.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.sessionID != "" && evt.SessionID != r.sessionID {
+	if r.ctx.SessionID != "" && evt.SessionID != r.ctx.SessionID {
 		return
 	}
-	switch evt.Type {
-	case events.EventSubmissionAccepted:
-		r.handleSubmissionAccepted(evt)
-	case events.EventAgentOutput:
-		r.handleAgentOutput(evt)
-	case events.EventTaskCompleted, events.EventError:
-		if r.activeSub != "" && evt.SubmissionID == r.activeSub {
-			r.activeSub = ""
-		}
-	}
-}
-
-func (r *EQRenderer) handleSubmissionAccepted(evt events.Event) {
-	op, ok := evt.Payload.(events.Operation)
-	if !ok {
-		return
-	}
-	if op.UserInput == nil {
-		return
-	}
-	r.activeSub = evt.SubmissionID
-	for _, msg := range op.UserInput.Items {
-		if msg.Role != "user" {
-			continue
-		}
-		r.writeLines(r.transcript.AppendUser(msg.Content))
-	}
-}
-
-func (r *EQRenderer) handleAgentOutput(evt events.Event) {
-	if r.activeSub != "" && evt.SubmissionID != r.activeSub {
-		return
-	}
-	msg, ok := evt.Payload.(events.AgentOutput)
-	if !ok {
-		return
-	}
-	if msg.Final {
-		final := msg.Content
-		if final == "" {
-			final = ""
-		}
-		r.writeLines(r.transcript.FinalizeAssistant(final))
-		r.activeSub = ""
-		return
-	}
-	if msg.Content != "" {
-		r.writeLines(r.transcript.AppendAssistantChunk(msg.Content))
-	}
-}
-
-func (r *EQRenderer) writeLines(lines []string) {
-	for _, line := range lines {
-		fmt.Fprintln(r.writer, line)
+	if renderer := r.renderers[evt.Type]; renderer != nil {
+		renderer.Handle(&r.ctx, evt)
 	}
 }
 
@@ -112,7 +81,7 @@ func (r *EQRenderer) writeLines(lines []string) {
 func (r *EQRenderer) AppendAssistant(content string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.writeLines(r.transcript.FinalizeAssistant(content))
+	r.ctx.Emit(r.ctx.Transcript.FinalizeAssistant(content))
 }
 
 // AppendMessages 允许批量追加消息并输出增量。
@@ -122,9 +91,9 @@ func (r *EQRenderer) AppendMessages(msgs []agent.Message) {
 	for _, m := range msgs {
 		switch m.Role {
 		case agent.RoleUser:
-			r.writeLines(r.transcript.AppendUser(m.Content))
+			r.ctx.Emit(r.ctx.Transcript.AppendUser(m.Content))
 		case agent.RoleAssistant:
-			r.writeLines(r.transcript.FinalizeAssistant(m.Content))
+			r.ctx.Emit(r.ctx.Transcript.FinalizeAssistant(m.Content))
 		}
 	}
 }

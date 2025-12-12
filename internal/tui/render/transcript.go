@@ -122,6 +122,33 @@ func (t *Transcript) SetWidth(width int) {
 	}
 }
 
+// Messages returns a copy of current messages.
+func (t *Transcript) Messages() []agent.Message {
+	if t == nil {
+		return nil
+	}
+	return append([]agent.Message{}, t.messages...)
+}
+
+// LoadMessages replaces transcript content with provided messages.
+// Used by UIs to hydrate from persisted session state.
+func (t *Transcript) LoadMessages(msgs []agent.Message) {
+	if t == nil {
+		return
+	}
+	t.messages = append([]agent.Message{}, msgs...)
+	t.lastRender = nil
+}
+
+// Reset clears all messages and cached render state.
+func (t *Transcript) Reset() {
+	if t == nil {
+		return
+	}
+	t.messages = nil
+	t.lastRender = nil
+}
+
 // AppendUser 追加用户消息并返回增量行。
 func (t *Transcript) AppendUser(content string) []string {
 	t.messages = append(t.messages, agent.Message{Role: agent.RoleUser, Content: content})

@@ -14,12 +14,13 @@ import (
 	"echo-cli/internal/i18n"
 	"echo-cli/internal/logger"
 	"echo-cli/internal/policy"
+	"echo-cli/internal/render"
 	"echo-cli/internal/sandbox"
 	"echo-cli/internal/search"
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
 	toolengine "echo-cli/internal/tools/engine"
-	"echo-cli/internal/tui/render"
+	tuirender "echo-cli/internal/tui/render"
 	"echo-cli/internal/tui/slash"
 
 	"github.com/atotto/clipboard"
@@ -99,11 +100,13 @@ type systemMsg struct {
 
 type Model struct {
 	textarea                 textarea.Model
-	viewport                 render.HighPerformanceViewport
+	viewport                 tuirender.HighPerformanceViewport
 	eventsPane               viewport.Model
 	search                   list.Model
 	sessions                 list.Model
 	messages                 []agent.Message
+	eqCtx                    render.Context
+	eqRenderers              map[events.EventType]render.EventRenderer
 	streamIdx                int
 	streamCh                 chan streamEvent
 	modelName                string
@@ -173,7 +176,7 @@ func New(opts Options) *Model {
 	ti.ShowLineNumbers = false
 	ti.Focus()
 
-	vp := render.NewHighPerformanceViewport(90, 12)
+	vp := tuirender.NewHighPerformanceViewport(90, 12)
 	vp.SetContent("Welcome to Echo (Go). Type a message to start.\n")
 	evp := viewport.New(30, 12)
 	evp.SetContent("Events")
@@ -212,11 +215,16 @@ func New(opts Options) *Model {
 	})
 
 	m := Model{
-		textarea:        ti,
-		viewport:        vp,
-		eventsPane:      evp,
-		search:          search,
-		sessions:        sessions,
+		textarea:   ti,
+		viewport:   vp,
+		eventsPane: evp,
+		search:     search,
+		sessions:   sessions,
+		eqCtx: render.Context{
+			SessionID:  opts.ResumeSessionID,
+			Transcript: tuirender.NewTranscript(90),
+		},
+		eqRenderers:     render.DefaultRenderers(),
 		modelName:       opts.Model,
 		reasoning:       opts.Reasoning,
 		sandbox:         opts.Sandbox,
@@ -240,11 +248,22 @@ func New(opts Options) *Model {
 		slash:           sl,
 		conversationLog: opts.ConversationLog,
 	}
+	// TUI doesn't render submission.accepted into transcript because user input is
+	// already echoed locally. Still keep ActiveSub in sync.
+	m.eqRenderers[events.EventSubmissionAccepted] = tuiSubmissionAcceptedRenderer{}
+	m.eqCtx.EmitLines = func(lines []string) {
+		if len(lines) == 0 {
+			return
+		}
+		m.messages = m.eqCtx.Transcript.Messages()
+		m.refreshTranscript()
+	}
 	if len(m.roots) == 0 && m.workdir != "" {
 		m.roots = []string{m.workdir}
 	}
 	if len(opts.InitialMessages) > 0 {
-		m.messages = append(m.messages, opts.InitialMessages...)
+		m.eqCtx.Transcript.LoadMessages(opts.InitialMessages)
+		m.messages = m.eqCtx.Transcript.Messages()
 		m.refreshTranscript()
 	}
 	if opts.Events != nil {
@@ -296,10 +315,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		return m.finish(cmds...)
 	case startPromptMsg:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: msg.Text})
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+		m.appendUserMessage(msg.Text)
+		m.appendAssistantPlaceholder()
 		m.streamIdx = len(m.messages) - 1
-		m.refreshTranscript()
 		m.pending = true
 		m.pendingSince = time.Now()
 		cmds = append(cmds, m.startStream(msg.Text))
@@ -333,8 +351,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenQueues()...)
 		return m.finish(cmds...)
 	case systemMsg:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: msg.Text})
-		m.refreshTranscript()
+		m.appendAssistantMessage(msg.Text)
 		return m.finish(cmds...)
 	case agentErrorMsg:
 		m.pending = false
@@ -376,10 +393,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, func() tea.Msg { return systemMsg{Text: fmt.Sprintf("session load error: %v", err)} })
 						return m.finish(cmds...)
 					}
-					m.messages = append([]agent.Message{}, rec.Messages...)
 					m.resumeSessionID = rec.ID
+					m.eqCtx.SessionID = rec.ID
 					m.pickingSession = false
-					m.refreshTranscript()
+					m.loadTranscriptMessages(rec.Messages)
 					return m.finish(cmds...)
 				}
 			case "esc", "ctrl+c":
@@ -467,10 +484,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m.finish(cmds...)
 			}
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: input})
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+			m.appendUserMessage(input)
+			m.appendAssistantPlaceholder()
 			m.streamIdx = len(m.messages) - 1
-			m.refreshTranscript()
 			m.textarea.Reset()
 			m.setComposerHeight()
 			m.pending = true
@@ -606,6 +622,7 @@ func (m *Model) startSubmission(input string, inputCtx events.InputContext) tea.
 	if inputCtx.SessionID == "" {
 		inputCtx.SessionID = m.resumeSessionID
 	}
+	m.eqCtx.SessionID = inputCtx.SessionID
 	id, err := m.gateway.SubmitUserInput(context.Background(), []events.InputMessage{
 		{Role: "user", Content: input},
 	}, inputCtx)
@@ -616,6 +633,7 @@ func (m *Model) startSubmission(input string, inputCtx events.InputContext) tea.
 		return nil
 	}
 	m.activeSub = id
+	m.eqCtx.ActiveSub = id
 	return tea.Batch(m.listenQueues()...)
 }
 
@@ -716,6 +734,17 @@ func (m *Model) handleBusEvent(evt any) tea.Cmd {
 }
 
 func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
+	// Filter out other sessions when a session id is fixed.
+	if m.eqCtx.SessionID != "" && evt.SessionID != m.eqCtx.SessionID {
+		return nil
+	}
+
+	// First, dispatch to per-event transcript renderer.
+	if renderer := m.eqRenderers[evt.Type]; renderer != nil {
+		renderer.Handle(&m.eqCtx, evt)
+	}
+
+	// Then update TUI-specific pending/queue state.
 	switch evt.Type {
 	case events.EventAgentOutput:
 		msg, ok := evt.Payload.(events.AgentOutput)
@@ -723,16 +752,15 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 			return nil
 		}
 		if msg.Final {
-			finalText := msg.Content
-			if finalText == "" && m.streamIdx >= 0 && m.streamIdx < len(m.messages) {
-				finalText = m.messages[m.streamIdx].Content
-			}
-			cmd := m.finishStream(finalText)
+			m.pending = false
+			m.pendingSince = time.Time{}
+			m.err = nil
+			m.streamCh = nil
+			m.streamIdx = -1
 			m.activeSub = ""
-			return cmd
-		}
-		if msg.Content != "" {
-			m.appendChunk(msg.Content)
+			m.eqCtx.ActiveSub = ""
+			m.logEvent("agent_message", "assistant reply completed")
+			return m.startQueuedIfAny()
 		}
 	case events.EventError:
 		if evt.SubmissionID != m.activeSub {
@@ -741,6 +769,7 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 		m.pending = false
 		m.pendingSince = time.Time{}
 		m.activeSub = ""
+		m.eqCtx.ActiveSub = ""
 		m.err = fmt.Errorf("%v", evt.Payload)
 		return m.startQueuedIfAny()
 	case events.EventTaskCompleted:
@@ -750,9 +779,24 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 		m.pending = false
 		m.pendingSince = time.Time{}
 		m.activeSub = ""
+		m.eqCtx.ActiveSub = ""
 		return m.startQueuedIfAny()
 	}
 	return nil
+}
+
+// tuiSubmissionAcceptedRenderer keeps ActiveSub in sync for TUI without re-echoing user input.
+type tuiSubmissionAcceptedRenderer struct{}
+
+func (tuiSubmissionAcceptedRenderer) Type() events.EventType { return events.EventSubmissionAccepted }
+
+func (tuiSubmissionAcceptedRenderer) Handle(ctx *render.Context, evt events.Event) {
+	if ctx == nil {
+		return
+	}
+	if evt.SubmissionID != "" {
+		ctx.ActiveSub = evt.SubmissionID
+	}
 }
 
 func approvalDescription(ev tools.ToolEvent) string {
@@ -836,10 +880,9 @@ func (m *Model) startQueuedIfAny() tea.Cmd {
 	}
 	next := m.queuedMessages[0]
 	m.queuedMessages = m.queuedMessages[1:]
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: next})
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+	m.appendUserMessage(next)
+	m.appendAssistantPlaceholder()
 	m.streamIdx = len(m.messages) - 1
-	m.refreshTranscript()
 	m.pending = true
 	m.pendingSince = time.Now()
 	return m.startStream(next)
@@ -851,20 +894,13 @@ func (m *Model) finishStream(finalText string) tea.Cmd {
 	m.err = nil
 	m.streamCh = nil
 	m.streamIdx = -1
-	if finalText != "" && len(m.messages) > 0 {
-		m.messages = append(m.messages[:len(m.messages)-1], agent.Message{Role: agent.RoleAssistant, Content: finalText})
-	}
-	m.refreshTranscript()
+	m.finalizeAssistantInTranscript(finalText)
 	m.logEvent("agent_message", "assistant reply completed")
 	return m.startQueuedIfAny()
 }
 
 func (m *Model) appendChunk(chunk string) {
-	if m.streamIdx < 0 || m.streamIdx >= len(m.messages) {
-		return
-	}
-	m.messages[m.streamIdx].Content += chunk
-	m.refreshTranscript()
+	m.appendAssistantChunkToTranscript(chunk)
 }
 
 func (m *Model) resize(width, height int) []tea.Cmd {
@@ -877,6 +913,9 @@ func (m *Model) resize(width, height int) []tea.Cmd {
 
 	if width > 0 {
 		m.textarea.SetWidth(width)
+	}
+	if m.eqCtx.Transcript != nil && convWidth != m.viewport.Width {
+		m.eqCtx.Transcript.SetWidth(convWidth)
 	}
 	if resizeCmd := m.viewport.Resize(convWidth, convHeight); resizeCmd != nil {
 		cmds = append(cmds, resizeCmd)
@@ -962,8 +1001,7 @@ func (m *Model) applySlashAction(action slash.Action) tea.Cmd {
 		return m.submitSlashPrompt(action)
 	case slash.ActionError:
 		if action.Message != "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: action.Message})
-			m.refreshTranscript()
+			m.appendAssistantMessage(action.Message)
 		}
 	case slash.ActionClose, slash.ActionNone:
 		// no-op
@@ -983,13 +1021,79 @@ func (m *Model) submitSlashPrompt(action slash.Action) tea.Cmd {
 		m.enqueueQueued(text)
 		return nil
 	}
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: text})
-	m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: ""})
+	m.appendUserMessage(text)
+	m.appendAssistantPlaceholder()
 	m.streamIdx = len(m.messages) - 1
-	m.refreshTranscript()
 	m.pending = true
 	m.pendingSince = time.Now()
 	return m.startStream(text)
+}
+
+// Conversation helpers backed by eqCtx.Transcript.
+func (m *Model) appendUserMessage(text string) {
+	if m.eqCtx.Transcript == nil {
+		m.eqCtx.Transcript = tuirender.NewTranscript(m.conversationWidth())
+	}
+	m.eqCtx.Transcript.AppendUser(text)
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) appendAssistantMessage(text string) {
+	if m.eqCtx.Transcript == nil {
+		m.eqCtx.Transcript = tuirender.NewTranscript(m.conversationWidth())
+	}
+	m.eqCtx.Transcript.FinalizeAssistant(text)
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) appendAssistantPlaceholder() {
+	if m.eqCtx.Transcript == nil {
+		m.eqCtx.Transcript = tuirender.NewTranscript(m.conversationWidth())
+	}
+	// Empty chunk creates a placeholder assistant bullet.
+	m.eqCtx.Transcript.AppendAssistantChunk("")
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) appendAssistantChunkToTranscript(chunk string) {
+	if m.eqCtx.Transcript == nil {
+		return
+	}
+	m.eqCtx.Transcript.AppendAssistantChunk(chunk)
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) finalizeAssistantInTranscript(finalText string) {
+	if m.eqCtx.Transcript == nil {
+		return
+	}
+	m.eqCtx.Transcript.FinalizeAssistant(finalText)
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) loadTranscriptMessages(msgs []agent.Message) {
+	if m.eqCtx.Transcript == nil {
+		m.eqCtx.Transcript = tuirender.NewTranscript(m.conversationWidth())
+	}
+	m.eqCtx.Transcript.LoadMessages(msgs)
+	m.messages = m.eqCtx.Transcript.Messages()
+	m.refreshTranscript()
+}
+
+func (m *Model) resetTranscriptMessages() {
+	if m.eqCtx.Transcript == nil {
+		m.messages = nil
+		m.refreshTranscript()
+		return
+	}
+	m.eqCtx.Transcript.Reset()
+	m.messages = nil
+	m.refreshTranscript()
 }
 
 func (m *Model) refreshTranscript() {
@@ -1064,11 +1168,11 @@ func (m *Model) renderTranscriptLines() ([]string, []string) {
 	if width <= 0 {
 		width = 80
 	}
-	lines := render.RenderMessages(m.messages, width)
+	lines := tuirender.RenderMessages(m.messages, width)
 	if len(lines) == 0 {
-		lines = []render.Line{{Spans: []render.Span{{Text: "Welcome to Echo (Go). Type a message to start."}}}}
+		lines = []tuirender.Line{{Spans: []tuirender.Span{{Text: "Welcome to Echo (Go). Type a message to start."}}}}
 	}
-	return render.LinesToStrings(lines), render.LinesToPlainStrings(lines)
+	return tuirender.LinesToStrings(lines), tuirender.LinesToPlainStrings(lines)
 }
 
 func (m *Model) logConversationSnapshot(lines []string) {
@@ -1095,8 +1199,8 @@ func (m *Model) copyConversation() {
 	if width <= 0 {
 		width = 80
 	}
-	lines := render.RenderMessages(m.messages, width)
-	plain := render.LinesToPlainStrings(lines)
+	lines := tuirender.RenderMessages(m.messages, width)
+	plain := tuirender.LinesToPlainStrings(lines)
 	text := strings.Join(plain, "\n")
 	if strings.TrimSpace(text) == "" {
 		m.logEvent("copy", "conversation is empty")
@@ -1408,8 +1512,7 @@ func (m *Model) handleSlash(input string) tea.Cmd {
 		}
 	case slash.ActionError:
 		if action.Message != "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: action.Message})
-			m.refreshTranscript()
+			m.appendAssistantMessage(action.Message)
 		}
 	}
 	return nil
@@ -1420,13 +1523,11 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 	case slash.CommandQuit, slash.CommandExit:
 		return tea.Quit
 	case slash.CommandClear:
-		m.messages = nil
-		m.refreshTranscript()
+		m.resetTranscriptMessages()
 		return nil
 	case slash.CommandStatus:
 		info := fmt.Sprintf("model=%s sandbox=%s dir=%s", m.modelName, m.sandbox, m.workdir)
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: info})
-		m.refreshTranscript()
+		m.appendAssistantMessage(info)
 		return nil
 	case slash.CommandSessions:
 		ids, err := session.ListIDs()
@@ -1444,16 +1545,14 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		if arg := firstArg(args); arg != "" {
 			m.modelName = arg
 		}
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("using model %s", m.modelName)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("using model %s", m.modelName))
 		return nil
 	case slash.CommandApprovals:
 		if arg := firstArg(args); arg != "" {
 			m.policy.ApprovalPolicy = arg
 			m.engine = toolengine.New(m.policy, m.runner, m.approver, m.workdir)
 		}
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("approval policy=%s", m.policy.ApprovalPolicy)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("approval policy=%s", m.policy.ApprovalPolicy))
 		return nil
 	case slash.CommandInit:
 		return m.handleInitCommand()
@@ -1462,9 +1561,9 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		if err != nil {
 			return func() tea.Msg { return systemMsg{Text: fmt.Sprintf("resume error: %v", err)} }
 		}
-		m.messages = append([]agent.Message{}, rec.Messages...)
 		m.resumeSessionID = rec.ID
-		m.refreshTranscript()
+		m.eqCtx.SessionID = rec.ID
+		m.loadTranscriptMessages(rec.Messages)
 		return nil
 	case slash.CommandDiff:
 		return m.runTool(tools.ToolRequest{
@@ -1474,8 +1573,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		})
 	case slash.CommandAddDir:
 		if args == "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /add-dir <path>"})
-			m.refreshTranscript()
+			m.appendAssistantMessage("usage: /add-dir <path>")
 			return nil
 		}
 		path := firstArg(args)
@@ -1485,13 +1583,11 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		m.roots = append(m.roots, path)
 		m.runner = sandbox.NewRunner(m.sandbox, m.roots...)
 		m.engine = toolengine.New(m.policy, m.runner, m.approver, m.workdir)
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("added workspace root: %s", path)})
-		m.refreshTranscript()
+		m.appendAssistantMessage(fmt.Sprintf("added workspace root: %s", path))
 		return nil
 	case slash.CommandRun:
 		if args == "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /run <command>"})
-			m.refreshTranscript()
+			m.appendAssistantMessage("usage: /run <command>")
 			return nil
 		}
 		return m.runTool(tools.ToolRequest{
@@ -1501,8 +1597,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		})
 	case slash.CommandApply:
 		if args == "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /apply <patch-file>"})
-			m.refreshTranscript()
+			m.appendAssistantMessage("usage: /apply <patch-file>")
 			return nil
 		}
 		patchPath := firstArg(args)
@@ -1522,8 +1617,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		})
 	case slash.CommandAttach:
 		if args == "" {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "usage: /attach <file>"})
-			m.refreshTranscript()
+			m.appendAssistantMessage("usage: /attach <file>")
 			return nil
 		}
 		target := firstArg(args)
@@ -1535,9 +1629,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		if err != nil {
 			return func() tea.Msg { return systemMsg{Text: fmt.Sprintf("attach failed: %v", err)} }
 		}
-		msg := agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("Attachment %s:\n%s", display, string(data))}
-		m.messages = append(m.messages, msg)
-		m.refreshTranscript()
+		m.appendUserMessage(fmt.Sprintf("Attachment %s:\n%s", display, string(data)))
 		return nil
 	case slash.CommandMention:
 		return m.loadSearch()
@@ -1546,47 +1638,38 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		if strings.TrimSpace(args) != "" {
 			msg = strings.TrimSpace(strings.TrimPrefix(args, "/feedback "))
 		}
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: msg})
-		m.refreshTranscript()
+		m.appendAssistantMessage(msg)
 		return nil
 	case slash.CommandNew:
 		m.resetSession()
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Started a new session."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Started a new session.")
 		return nil
 	case slash.CommandReview:
 		m.reviewMode = true
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Review mode enabled for subsequent turns."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Review mode enabled for subsequent turns.")
 		return nil
 	case slash.CommandCompact:
 		cmd := m.toggleChrome()
 		if m.chromeCollapsed {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "已折叠顶部信息，留出更多会话空间。"})
+			m.appendAssistantMessage("已折叠顶部信息，留出更多会话空间。")
 		} else {
-			m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "已恢复完整顶部信息。"})
+			m.appendAssistantMessage("已恢复完整顶部信息。")
 		}
-		m.refreshTranscript()
 		return cmd
 	case slash.CommandUndo:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "undo is not available in this build."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("undo is not available in this build.")
 		return nil
 	case slash.CommandMCP:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "MCP UI not implemented in Go TUI yet."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("MCP UI not implemented in Go TUI yet.")
 		return nil
 	case slash.CommandLogout:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Use `echo-cli logout` to clear credentials."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Use `echo-cli logout` to clear credentials.")
 		return nil
 	case slash.CommandSkills:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "No skills metadata available."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("No skills metadata available.")
 		return nil
 	case slash.CommandRollout, slash.CommandTestApproval:
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleAssistant, Content: "Debug-only command not supported in this build."})
-		m.refreshTranscript()
+		m.appendAssistantMessage("Debug-only command not supported in this build.")
 		return nil
 	}
 	return nil
@@ -1608,13 +1691,15 @@ func (m *Model) toggleChrome() tea.Cmd {
 }
 
 func (m *Model) resetSession() {
-	m.messages = nil
+	m.resetTranscriptMessages()
 	m.streamIdx = -1
 	m.pending = false
 	m.pendingSince = time.Time{}
 	m.activeSub = ""
+	m.eqCtx.ActiveSub = ""
 	m.queuedMessages = nil
 	m.resumeSessionID = ""
+	m.eqCtx.SessionID = ""
 	m.reviewMode = false
 }
 

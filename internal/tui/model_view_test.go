@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"echo-cli/internal/agent"
 )
 
 func TestFlushTranscriptUsesViewportHeight(t *testing.T) {
@@ -14,9 +12,8 @@ func TestFlushTranscriptUsesViewportHeight(t *testing.T) {
 
 	longText := strings.Repeat("hello ", 20)
 	for i := 0; i < 30; i++ {
-		m.messages = append(m.messages, agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("%s%d", longText, i)})
+		m.appendUserMessage(fmt.Sprintf("%s%d", longText, i))
 	}
-	m.refreshTranscript()
 
 	lines, _ := m.renderTranscriptLines()
 	expectedHeight := m.conversationHeight(m.conversationWidth())
