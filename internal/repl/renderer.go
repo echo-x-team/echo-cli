@@ -3,14 +3,12 @@ package repl
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
 	"echo-cli/internal/tools"
-	tuirender "echo-cli/internal/tui/render"
 )
 
 // EQRenderer listens to EQ events and renders them to a terminal writer as history cells.
@@ -22,13 +20,12 @@ type EQRenderer struct {
 	sessionID string
 	activeSub string
 	width     int
-	w         io.Writer
 
 	renderers map[events.EventType]EventCellRenderer
 
-	// Accumulate agent.output deltas so we can render a coherent final assistant cell
-	// without trying to do in-place terminal updates.
-	pendingAssistant map[string]*strings.Builder // submission_id -> text builder
+	// 对齐 codex：屏幕由 Scrollback + InlineViewport 组成。
+	scrollback *Scrollback
+	viewport   *InlineViewport
 }
 
 type EQRendererOptions struct {
@@ -44,20 +41,16 @@ type EventCellRenderer interface {
 }
 
 func NewEQRenderer(opts EQRendererOptions) *EQRenderer {
-	w := opts.Writer
-	if w == nil {
-		w = os.Stdout
-	}
 	width := opts.Width
 	if width <= 0 {
 		width = 80
 	}
 	r := &EQRenderer{
-		sessionID:        opts.SessionID,
-		width:            width,
-		w:                w,
-		renderers:        map[events.EventType]EventCellRenderer{},
-		pendingAssistant: map[string]*strings.Builder{},
+		sessionID:  opts.SessionID,
+		width:      width,
+		renderers:  map[events.EventType]EventCellRenderer{},
+		scrollback: NewScrollback(ScrollbackOptions{Writer: opts.Writer, Width: width}),
+		viewport:   NewInlineViewport(),
 	}
 	for _, rr := range defaultCellRenderers() {
 		r.renderers[rr.Type()] = rr
@@ -90,7 +83,7 @@ func (r *EQRenderer) Handle(evt events.Event) {
 func (r *EQRenderer) AppendAssistant(content string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.emitCell(newAssistantCell(content))
+	r.ScrollbackAppend(newAssistantCell(content))
 }
 
 // AppendMessages appends historical messages as cells (non-EQ usage).
@@ -100,37 +93,19 @@ func (r *EQRenderer) AppendMessages(msgs []agent.Message) {
 	for _, m := range msgs {
 		switch m.Role {
 		case agent.RoleUser:
-			r.emitCell(newUserCell(m.Content))
+			r.ScrollbackAppend(newUserCell(m.Content))
 		case agent.RoleAssistant:
-			r.emitCell(newAssistantCell(m.Content))
+			r.ScrollbackAppend(newAssistantCell(m.Content))
 		}
 	}
 }
 
-func (r *EQRenderer) emitCell(cell HistoryCell) {
-	if cell == nil {
+func (r *EQRenderer) ScrollbackAppend(cell HistoryCell) {
+	if r == nil || cell == nil || r.scrollback == nil {
 		return
 	}
-	lines := cell.Render(r.width)
-	for _, s := range tuirender.LinesToStrings(lines) {
-		fmt.Fprintln(r.w, s)
-	}
-}
-
-func (r *EQRenderer) assistantBuf(subID string) *strings.Builder {
-	if subID == "" {
-		subID = "_"
-	}
-	b := r.pendingAssistant[subID]
-	if b == nil {
-		b = &strings.Builder{}
-		r.pendingAssistant[subID] = b
-	}
-	return b
-}
-
-func (r *EQRenderer) clearAssistantBuf(subID string) {
-	delete(r.pendingAssistant, subID)
+	r.scrollback.SetWidth(r.width)
+	r.scrollback.AppendCell(cell)
 }
 
 // --- Default cell renderers ---
@@ -156,11 +131,14 @@ func (submissionAcceptedRenderer) Handle(r *EQRenderer, evt events.Event) {
 		return
 	}
 	r.activeSub = evt.SubmissionID
+	if r.viewport != nil && r.viewport.Active != nil {
+		r.viewport.Active.Begin(evt.SubmissionID)
+	}
 	for _, item := range op.UserInput.Items {
 		if item.Role != "user" {
 			continue
 		}
-		r.emitCell(newUserCell(item.Content))
+		r.ScrollbackAppend(newUserCell(item.Content))
 	}
 }
 
@@ -177,21 +155,26 @@ func (agentOutputRenderer) Handle(r *EQRenderer, evt events.Event) {
 		return
 	}
 
-	// Buffer deltas; only render a single assistant cell when Final=true.
+	// 对齐 codex：delta 更新 active_cell；最终结果 flush 到 scrollback。
 	if !msg.Final {
-		if msg.Content != "" {
-			r.assistantBuf(evt.SubmissionID).WriteString(msg.Content)
+		if r.viewport != nil && r.viewport.Active != nil && msg.Content != "" {
+			r.viewport.Active.AppendDelta(evt.SubmissionID, msg.Content)
 		}
 		return
 	}
 
-	finalText := msg.Content
-	if strings.TrimSpace(finalText) == "" {
-		finalText = r.assistantBuf(evt.SubmissionID).String()
+	var cell HistoryCell
+	if r.viewport != nil && r.viewport.Active != nil {
+		cell = r.viewport.Active.Finalize(evt.SubmissionID, msg.Content)
+	} else {
+		// Defensive fallback; should not happen.
+		finalText := strings.TrimSpace(msg.Content)
+		if finalText != "" {
+			cell = newAssistantCell(finalText)
+		}
 	}
-	r.clearAssistantBuf(evt.SubmissionID)
-	if strings.TrimSpace(finalText) != "" {
-		r.emitCell(newAssistantCell(finalText))
+	if cell != nil {
+		r.ScrollbackAppend(cell)
 	}
 	r.activeSub = ""
 }
@@ -205,7 +188,7 @@ func (planUpdatedRenderer) Handle(r *EQRenderer, evt events.Event) {
 	if !ok {
 		return
 	}
-	r.emitCell(newPlanCell(args))
+	r.ScrollbackAppend(newPlanCell(args))
 }
 
 type toolEventRenderer struct{}
@@ -220,7 +203,7 @@ func (toolEventRenderer) Handle(r *EQRenderer, evt events.Event) {
 	// In REPL human output, render key tool lifecycle events as their own blocks.
 	switch tev.Type {
 	case "approval.requested", "approval.completed", "item.started", "item.completed":
-		r.emitCell(newToolEventCell(tev))
+		r.ScrollbackAppend(newToolEventCell(tev))
 	}
 }
 
@@ -234,5 +217,5 @@ func (taskErrorRenderer) Handle(r *EQRenderer, evt events.Event) {
 		return
 	}
 	// Reuse assistant styling for errors to keep output compact.
-	r.emitCell(newAssistantCell("error: " + msg))
+	r.ScrollbackAppend(newAssistantCell("error: " + msg))
 }
