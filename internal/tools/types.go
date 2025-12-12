@@ -36,10 +36,12 @@ type ToolRequest struct {
 }
 
 type ToolResult struct {
-	ID       string
-	Kind     ToolKind
-	Status   string // started|updated|completed|error
-	Output   string
+	ID     string
+	Kind   ToolKind
+	Status string // started|updated|completed|error
+	Output string
+	// Diff 用于 file_change(apply_patch) 的变更内容展示（例如 unified diff 或 begin_patch 格式）。
+	Diff     string
 	Error    string
 	ExitCode int
 	Path     string

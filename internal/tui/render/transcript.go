@@ -5,6 +5,7 @@ import (
 
 	"echo-cli/internal/agent"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 var (
@@ -12,6 +13,10 @@ var (
 	userIndentStyle      = lipgloss.NewStyle().Faint(true)
 	assistantPrefixStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
 	assistantIndentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
+	toolStyle            = lipgloss.NewStyle().Faint(true)
+	diffAddStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#16a34a"))
+	diffDelStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#dc2626"))
+	diffHunkStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Faint(true)
 )
 
 // RenderMessages 使用 ColumnRenderable 将消息列表渲染为行。
@@ -89,15 +94,13 @@ func renderAssistantLines(content string, width int) []Line {
 
 func renderToolLines(content string, width int) []Line {
 	// Tool/event blocks are already "cell shaped" (contain their own bullets/indent).
-	// We just wrap them and dim to keep them visually distinct from user/assistant messages.
+	// Keep them visually distinct from user/assistant messages, but preserve whitespace
+	// (tool outputs/diffs are often preformatted).
 	wrapWidth := width - 2
 	if wrapWidth < 1 {
 		wrapWidth = width
 	}
-	style := lipgloss.NewStyle().Faint(true)
-	body := wrapLines(content, wrapWidth, style)
-	// No prefix; keep the block compact.
-	return body
+	return wrapToolBlock(content, wrapWidth)
 }
 
 func wrapPlain(content string, width int) []Line {
@@ -112,6 +115,96 @@ func wrapLines(content string, width int, style lipgloss.Style) []Line {
 	out := make([]Line, 0, len(lines))
 	for _, l := range lines {
 		out = append(out, Line{Spans: []Span{{Text: l, Style: style}}})
+	}
+	return out
+}
+
+func wrapToolBlock(content string, width int) []Line {
+	if width <= 0 {
+		width = len(content)
+	}
+	rawLines := strings.Split(content, "\n")
+
+	inDiff := false
+	out := []Line{}
+	for _, raw := range rawLines {
+		isDiffHeader := strings.Contains(raw, "└ diff:")
+		lineInDiff := inDiff && !isDiffHeader
+
+		for _, l := range wrapLinePreserveSpaces(raw, width) {
+			out = append(out, Line{Spans: toolLineSpans(l, lineInDiff)})
+		}
+		if isDiffHeader {
+			inDiff = true
+		}
+	}
+	if len(out) == 0 {
+		return []Line{{}}
+	}
+	return out
+}
+
+func toolLineSpans(line string, inDiff bool) []Span {
+	if strings.TrimSpace(line) == "" {
+		return []Span{{Text: line, Style: toolStyle}}
+	}
+
+	if !inDiff {
+		return []Span{{Text: line, Style: toolStyle}}
+	}
+
+	// Keep cell indentation dim (our tool blocks indent payload lines by 4 spaces),
+	// but preserve the actual diff marker (e.g. leading ' ' context lines).
+	indent := ""
+	rest := line
+	if strings.HasPrefix(line, "    ") {
+		indent = "    "
+		rest = line[4:]
+	}
+
+	style := toolStyle
+	switch {
+	case strings.HasPrefix(rest, "+") && !strings.HasPrefix(rest, "+++"):
+		style = diffAddStyle
+	case strings.HasPrefix(rest, "-") && !strings.HasPrefix(rest, "---"):
+		style = diffDelStyle
+	case strings.HasPrefix(rest, "@@"):
+		style = diffHunkStyle
+	case strings.HasPrefix(rest, "diff ") || strings.HasPrefix(rest, "*** ") || strings.HasPrefix(rest, "+++ ") || strings.HasPrefix(rest, "--- "):
+		style = toolStyle
+	}
+
+	if indent == "" {
+		return []Span{{Text: rest, Style: style}}
+	}
+	return []Span{
+		{Text: indent, Style: toolStyle},
+		{Text: rest, Style: style},
+	}
+}
+
+func wrapLinePreserveSpaces(line string, width int) []string {
+	if width <= 0 || runewidth.StringWidth(line) <= width {
+		return []string{line}
+	}
+	out := []string{}
+	current := []rune{}
+	w := 0
+	for _, r := range line {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > width && len(current) > 0 {
+			out = append(out, string(current))
+			current = current[:0]
+			w = 0
+		}
+		current = append(current, r)
+		w += rw
+	}
+	if len(current) > 0 {
+		out = append(out, string(current))
+	}
+	if len(out) == 0 {
+		return []string{line}
 	}
 	return out
 }

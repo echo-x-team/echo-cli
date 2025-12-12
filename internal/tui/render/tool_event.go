@@ -19,7 +19,11 @@ func FormatToolEventBlock(ev tools.ToolEvent) string {
 		if desc == "" {
 			desc = toolApprovalDesc(ev.Result)
 		}
-		return fmt.Sprintf("? approval required: %s", desc)
+		head := fmt.Sprintf("? approval required: %s", desc)
+		if ev.Result.Kind == tools.ToolApplyPatch && strings.TrimSpace(ev.Result.Diff) != "" {
+			return toolBlockWithDiff(head, ev.Result.Diff)
+		}
+		return head
 	case "approval.completed":
 		reason := strings.TrimSpace(ev.Reason)
 		if reason == "" {
@@ -31,7 +35,11 @@ func FormatToolEventBlock(ev tools.ToolEvent) string {
 		if detail == "" {
 			detail = string(ev.Result.Kind)
 		}
-		return fmt.Sprintf("%s %s", head, detail)
+		line := fmt.Sprintf("%s %s", head, detail)
+		if ev.Result.Kind == tools.ToolApplyPatch && strings.TrimSpace(ev.Result.Diff) != "" {
+			return toolBlockWithDiff(line, ev.Result.Diff)
+		}
+		return line
 	case "item.completed":
 		return toolCompletedBlock(ev.Result)
 	default:
@@ -103,16 +111,43 @@ func toolCompletedBlock(res tools.ToolResult) string {
 	if strings.TrimSpace(res.Error) != "" {
 		sb.WriteString("\n  └ error: " + strings.TrimSpace(res.Error))
 	}
+
+	// file_change wants a diff label, not "output".
+	if res.Kind == tools.ToolApplyPatch && strings.TrimSpace(res.Diff) != "" {
+		sb.WriteString("\n  └ diff:")
+		sb.WriteString(renderIndentedTruncatedLines(res.Diff, maxToolBlockLines))
+		return sb.String()
+	}
+
 	if strings.TrimSpace(res.Output) != "" {
 		sb.WriteString("\n  └ output:")
-		lines := strings.Split(strings.TrimRight(res.Output, "\n"), "\n")
-		if len(lines) > maxToolBlockLines {
-			lines = lines[:maxToolBlockLines]
-		}
-		for _, line := range lines {
-			line = strings.TrimRight(line, "\r")
-			sb.WriteString("\n    " + line)
-		}
+		sb.WriteString(renderIndentedTruncatedLines(res.Output, maxToolBlockLines))
+	}
+	return sb.String()
+}
+
+func toolBlockWithDiff(head string, diff string) string {
+	var sb strings.Builder
+	sb.WriteString(strings.TrimRight(head, "\n"))
+	sb.WriteString("\n  └ diff:")
+	sb.WriteString(renderIndentedTruncatedLines(diff, maxToolBlockLines))
+	return sb.String()
+}
+
+func renderIndentedTruncatedLines(text string, limit int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	truncated := false
+	if limit > 0 && len(lines) > limit {
+		lines = lines[:limit]
+		truncated = true
+	}
+	var sb strings.Builder
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		sb.WriteString("\n    " + line)
+	}
+	if truncated {
+		sb.WriteString("\n    … (truncated)")
 	}
 	return sb.String()
 }

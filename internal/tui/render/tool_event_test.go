@@ -46,3 +46,40 @@ func TestFormatToolEventBlock_ItemCompletedIncludesOutput(t *testing.T) {
 		t.Fatalf("expected output in block, got:\n%s", got)
 	}
 }
+
+func TestFormatToolEventBlock_FileChangeShowsDiff(t *testing.T) {
+	patch := "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch\n"
+
+	got := FormatToolEventBlock(tools.ToolEvent{
+		Type: "item.completed",
+		Result: tools.ToolResult{
+			Kind:   tools.ToolApplyPatch,
+			Status: "completed",
+			Path:   "a.txt",
+			Diff:   patch,
+		},
+	})
+	if !strings.Contains(got, "diff:") || !strings.Contains(got, "+new") {
+		t.Fatalf("expected diff in block, got:\n%s", got)
+	}
+	if strings.Contains(got, "output:") {
+		t.Fatalf("expected file_change to label as diff, got:\n%s", got)
+	}
+}
+
+func TestFormatToolEventBlock_FileChangeApprovalShowsDiff(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\n"
+
+	got := FormatToolEventBlock(tools.ToolEvent{
+		Type: "approval.requested",
+		Result: tools.ToolResult{
+			Kind: tools.ToolApplyPatch,
+			Path: "a.txt",
+			Diff: patch,
+		},
+		Reason: "needs approval",
+	})
+	if !strings.Contains(got, "approval required") || !strings.Contains(got, "diff:") || !strings.Contains(got, "+hello") {
+		t.Fatalf("expected approval diff in block, got:\n%s", got)
+	}
+}

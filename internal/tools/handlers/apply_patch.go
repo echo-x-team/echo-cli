@@ -27,6 +27,7 @@ func (ApplyPatchHandler) Describe(inv tools.Invocation) tools.ToolResult {
 		ID:   inv.Call.ID,
 		Kind: tools.ToolApplyPatch,
 		Path: args.Path,
+		Diff: args.Patch,
 	}
 }
 
@@ -42,6 +43,7 @@ func (ApplyPatchHandler) Handle(ctx context.Context, inv tools.Invocation) (tool
 			Status: "error",
 			Error:  "invalid patch payload",
 			Path:   args.Path,
+			Diff:   args.Patch,
 		}, fmt.Errorf("invalid patch payload: %w", err)
 	}
 
@@ -52,6 +54,7 @@ func (ApplyPatchHandler) Handle(ctx context.Context, inv tools.Invocation) (tool
 			Status: "error",
 			Error:  "runner not configured",
 			Path:   args.Path,
+			Diff:   args.Patch,
 		}, fmt.Errorf("runner not configured")
 	}
 
@@ -68,5 +71,6 @@ func (ApplyPatchHandler) Handle(ctx context.Context, inv tools.Invocation) (tool
 		Status: status,
 		Error:  errMsg,
 		Path:   args.Path,
+		Diff:   args.Patch,
 	}, err
 }

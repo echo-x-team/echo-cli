@@ -1,15 +1,1 @@
 # Pending Work
-- [x] 重新设计 internal/agent ModelClient 以支持工具调用
-- [x] 对齐 codex_client_requirements 文档，更新 OpenAI 客户端
-- [x] 验证编译/测试通过
-- [x] 阅读 3rd/codex 中 ResponseItem 定义并设计 Go 等价结构
-- [x] 在 echo-cli 中新增 ResponseItem 等数据结构
-- [x] 重构 internal/execution run_task 逻辑以对齐 docs/CODEX_RUN_TASK_EXIT_LOGIC_ANALYSIS.md
-- [x] 运行 gofmt/go test 验证
-- [x] 梳理当前 run_task/run_turn 以及相关模块的分层现状
-- [x] 对齐 3rd/codex/codex-rs 设计，规划 run_turn 层级（模型交互、工具识别、工具路由、工具执行）
-- [x] 实施分层调整并更新相关代码/结构说明
-- [x] 运行 gofmt/go test 验证
-- [x] 阅读 3rd/codex/codex-rs/core/src/tools/runtimes/apply_patch.rs 并整理工具需求
-- [x] 根据需求在 internal/tools 内实现 apply_patch 工具
-- [x] 运行 gofmt/go test 确认通过
