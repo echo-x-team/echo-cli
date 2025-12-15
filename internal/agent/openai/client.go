@@ -41,7 +41,7 @@ func New(opts Options) (*Client, error) {
 		option.WithAPIKey(opts.APIKey),
 	}
 	if base := strings.TrimSpace(opts.BaseURL); base != "" {
-		cfg = append(cfg, option.WithBaseURL(strings.TrimRight(base, "/")))
+		cfg = append(cfg, option.WithBaseURL(strings.TrimRight(normalizeBaseURL(base), "/")))
 	}
 	client := openai.NewClient(cfg...)
 
@@ -85,7 +85,7 @@ func (c *Client) completeChat(ctx context.Context, prompt agent.Prompt) (string,
 
 	resp, err := c.api.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return "", err
+		return "", wrapHTTPError(err)
 	}
 	if len(resp.Choices) == 0 {
 		return "", errors.New("no completion choices returned")
@@ -127,7 +127,7 @@ func (c *Client) streamChat(ctx context.Context, prompt agent.Prompt, onEvent fu
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return err
+		return wrapHTTPError(err)
 	}
 	for _, raw := range collector.Flush() {
 		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
@@ -140,7 +140,7 @@ func (c *Client) completeResponses(ctx context.Context, prompt agent.Prompt) (st
 	params := buildResponseParams(prompt, c.resolveModel(prompt.Model))
 	resp, err := c.api.Responses.New(ctx, params)
 	if err != nil {
-		return "", err
+		return "", wrapHTTPError(err)
 	}
 	if resp.Error.Message != "" && resp.Error.JSON.Message.Valid() {
 		return "", errors.New(resp.Error.Message)
@@ -196,7 +196,7 @@ func (c *Client) streamResponses(ctx context.Context, prompt agent.Prompt, onEve
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return err
+		return wrapHTTPError(err)
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
@@ -280,7 +280,46 @@ func buildResponseParams(prompt agent.Prompt, model string) responses.ResponseNe
 	if effort := prompts.ExtractReasoningEffort(instructions); effort != "" {
 		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(effort)}
 	}
+	if schema, ok := parseOutputSchema(prompt.OutputSchema); ok {
+		var format responses.ResponseFormatTextJSONSchemaConfigParam
+		format.Name = "echo_output_schema"
+		format.Schema = schema
+		format.Strict = openai.Bool(true)
+		format.Type = constant.JSONSchema("").Default()
+
+		params.Text = responses.ResponseTextConfigParam{
+			Format: responses.ResponseFormatTextConfigUnionParam{OfJSONSchema: &format},
+		}
+	}
 	return params
+}
+
+func parseOutputSchema(schema string) (map[string]any, bool) {
+	raw := strings.TrimSpace(schema)
+	if raw == "" {
+		return nil, false
+	}
+	var v map[string]any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+func wrapHTTPError(err error) error {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) && apiErr != nil {
+		respDump := strings.TrimSpace(string(apiErr.DumpResponse(true)))
+		if respDump != "" {
+			return fmt.Errorf("http_%d: %s", apiErr.StatusCode, respDump)
+		}
+		raw := strings.TrimSpace(apiErr.RawJSON())
+		if raw != "" {
+			return fmt.Errorf("http_%d: %s", apiErr.StatusCode, raw)
+		}
+		return fmt.Errorf("http_%d: %v", apiErr.StatusCode, err)
+	}
+	return err
 }
 
 func toResponseInput(msgs []agent.Message) []responses.ResponseInputItemUnionParam {

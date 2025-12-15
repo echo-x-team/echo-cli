@@ -26,7 +26,7 @@ _echo_cli_completions()
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "exec completion resume review login logout apply sandbox execpolicy mcp mcp-server cloud responses-proxy stdio-to-uds features" -- "$cur") )
+        COMPREPLY=( $(compgen -W "exec completion resume review login logout apply sandbox execpolicy mcp mcp-server cloud responses-proxy stdio-to-uds features ping" -- "$cur") )
         return 0
     fi
 
@@ -37,6 +37,9 @@ _echo_cli_completions()
             ;;
         exec)
             COMPREPLY=( $(compgen -W "--config --model --m --provider --cd --prompt --session --resume-last --list-sessions --auto-approve --auto-deny --approval-mode --ask-for-approval --sandbox --s --full-auto --dangerously-bypass-approvals-and-sandbox --yolo --run --apply-patch --add-dir --attach --image --timeout --retries --profile --oss --local-provider --output-schema --color --json --output-last-message --c --skip-git-repo-check" -- "$cur") )
+            ;;
+        ping)
+            COMPREPLY=( $(compgen -W "--config --provider --model --base-url --api-key --timeout --c" -- "$cur") )
             ;;
         *)
             COMPREPLY=( $(compgen -W "--config --model --m --provider --reasoning-effort --cd --C --prompt --auto-approve --auto-deny --approval-mode --ask-for-approval --sandbox --s --full-auto --dangerously-bypass-approvals-and-sandbox --yolo --profile --oss --local-provider --search --add-dir --attach --image --c --timeout --retries" -- "$cur") )
@@ -50,7 +53,7 @@ const zshCompletion = `
 #compdef echo-cli
 _echo_cli() {
     local -a subcmds
-    subcmds=('exec:run non-interactive exec mode' 'completion:print shell completions' 'resume:resume a saved session' 'review:run review (not yet implemented)' 'login:auth stub' 'logout:auth stub' 'apply:apply diff' 'sandbox:sandbox helpers' 'execpolicy:policy helpers' 'mcp:MCP helpers' 'mcp-server:MCP server' 'cloud:cloud tasks' 'responses-proxy:responses proxy' 'stdio-to-uds:stdio bridge' 'features:list feature flags')
+    subcmds=('exec:run non-interactive exec mode' 'completion:print shell completions' 'resume:resume a saved session' 'review:run review (not yet implemented)' 'login:auth stub' 'logout:auth stub' 'apply:apply diff' 'sandbox:sandbox helpers' 'execpolicy:policy helpers' 'mcp:MCP helpers' 'mcp-server:MCP server' 'cloud:cloud tasks' 'responses-proxy:responses proxy' 'stdio-to-uds:stdio bridge' 'features:list feature flags' 'ping:ping model provider')
     if (( CURRENT == 2 )); then
         _describe 'command' subcmds
         return
@@ -95,6 +98,16 @@ _echo_cli() {
                 '--timeout[Request timeout seconds]' \
                 '--retries[Retry count on request failure]' \
                 '--skip-git-repo-check[Skip git repo validation]'
+            ;;
+        ping)
+            _arguments \
+                '--config[Path to config file]' \
+                '--provider[Provider name]' \
+                '--model[Model name]' \
+                '--base-url[Override base URL]' \
+                '--api-key[Override API key]' \
+                '--timeout[Timeout seconds]' \
+                '--c[Config key=value override]'
             ;;
         *)
             _arguments \

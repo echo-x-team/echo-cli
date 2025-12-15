@@ -101,6 +101,9 @@ func main() {
 		case "features":
 			featuresMain(root, rest[1:])
 			return
+		case "ping":
+			pingMain(root, rest[1:])
+			return
 		}
 	}
 

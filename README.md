@@ -40,6 +40,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--model <name>`: override model.
 - `--cd <dir>`: set working directory shown in the status bar.
 - `--prompt "<text>"`: initial user message (also positional).
+- `ping`: ping configured model provider and print the returned text (uses `model_providers.<provider>.api_key` + `base_url`/`port`).
 - `exec <prompt>`: non-interactive JSONL run with session persistence; supports `--session <id>` / `--resume-last`.
 - Approval/sandbox: honors `sandbox_mode` and `approval_policy` (read-only blocks writes/commands; on-request/untrusted prompts).
 
