@@ -30,9 +30,12 @@ go run ./cmd/echo-cli exec --prompt "任务"
 
 ## 配置与环境
 
-- `OPENAI_API_KEY`：可选；未设置时应用回显响应，便于本地测试。
-- 配置文件：`~/.echo/config.toml`，可通过 `--config <path>` 覆盖，字段见 `internal/config/config.go`。
-- 配置中的 `default_language` 指定响应首选语言（默认为中文）。
+- 环境变量（优先级最高）：
+  - `ANTHROPIC_BASE_URL`（例如 `https://open.bigmodel.cn/api/anthropic`）
+  - `ANTHROPIC_AUTH_TOKEN`（鉴权 token）
+- 配置文件：`~/.echo/config.toml`（可通过 `--config <path>` 覆盖）仅包含：
+  - `url = "..."` 与 `token = "..."`
+- 其他运行参数（沙箱/审批/语言/超时等）通过 CLI flag 或 `-c key=value` 覆盖控制，不写入配置文件。
 
 ## CLI（M1+）
 
@@ -40,7 +43,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--model <name>`：覆盖模型名称。
 - `--cd <dir>`：设置状态栏显示的工作目录。
 - `--prompt "<text>"`：初始用户消息（亦可作为位置参数）。
-- `ping`：用配置的模型提供方做连通性测试并打印返回文本（使用 `model_providers.<provider>.api_key` + `base_url`/`port`）。
+- `ping`：对配置的 Anthropic 兼容端点做连通性测试并打印返回文本。
 - `exec <prompt>`：非交互 JSONL 运行，支持 `--session <id>` / `--resume-last` 持久化会话。
 - 审批/沙箱：遵循 `sandbox_mode` 与 `approval_policy`（read-only 阻止写入/命令；on-request/untrusted 会提示）。
 
@@ -52,8 +55,8 @@ go run ./cmd/echo-cli exec --prompt "任务"
 ## 代码结构
 
 - `cmd/echo-cli`：CLI 入口。
-- `internal/config`：配置加载与 CLI 覆盖。
-- `internal/agent`：agent 循环与模型抽象（包含 Echo Team 客户端与流式支持）。
+- `internal/config`：端点配置加载（url/token）。
+- `internal/agent`：agent 循环与模型抽象（Anthropic 兼容客户端与流式支持）。
 - `internal/tui`：Bubble Tea UI（对话流、输入栏、状态栏、@ 搜索、斜杠命令、审批、会话选择器）。
 - `internal/policy`：沙箱/审批控制。
 - `internal/tools`：shell 与补丁工具（沙箱管线占位）。

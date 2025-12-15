@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"echo-cli/internal/agent"
-	openaimodel "echo-cli/internal/agent/openai"
-	"echo-cli/internal/auth"
+	anthropicmodel "echo-cli/internal/agent/anthropic"
 	"echo-cli/internal/config"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
+	"echo-cli/internal/i18n"
 	"echo-cli/internal/instructions"
 	"echo-cli/internal/logger"
 	"echo-cli/internal/policy"
@@ -122,46 +122,35 @@ func runInteractive(root rootArgs, args []string) {
 }
 
 func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message) {
-	cfg, err := config.Load(cli.cfgPath)
+	endpoint, err := config.Load(cli.cfgPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
-	cfg = config.ApplyOverrides(cfg, config.Overrides{
-		Model:         cli.modelOverride,
-		Path:          cli.cfgPath,
-		ConfigProfile: cli.configProfile,
-	})
-	cfg = config.ApplyKVOverrides(cfg, []string(cli.configOverrides))
-	if cli.configProfile != "" {
-		cfg.ConfigProfile = cli.configProfile
-	}
-	if cli.oss {
-		cfg = applyOSSBootstrap(cfg, cli.localProvider)
-	}
-	if !cli.oss && cli.localProvider != "" {
-		cfg.ModelProvider = cli.localProvider
+	endpoint = config.ApplyKVOverrides(endpoint, []string(cli.configOverrides))
+
+	rt := defaultRuntimeConfig()
+	if strings.TrimSpace(cli.modelOverride) != "" {
+		rt.Model = strings.TrimSpace(cli.modelOverride)
 	}
 	if cli.sandboxMode != "" {
-		cfg.SandboxMode = cli.sandboxMode
+		rt.SandboxMode = cli.sandboxMode
 	}
 	if cli.fullAuto {
-		cfg.SandboxMode = "workspace-write"
-		if cfg.ApprovalPolicy == "" {
-			cfg.ApprovalPolicy = "on-request"
+		rt.SandboxMode = "workspace-write"
+		if strings.TrimSpace(rt.ApprovalPolicy) == "" {
+			rt.ApprovalPolicy = "on-request"
 		}
 	}
 	if cli.dangerouslyBypass {
-		cfg.SandboxMode = "danger-full-access"
-		cfg.ApprovalPolicy = "never"
+		rt.SandboxMode = "danger-full-access"
+		rt.ApprovalPolicy = "never"
 	}
 	if cli.askApproval != "" {
-		cfg.ApprovalPolicy = cli.askApproval
+		rt.ApprovalPolicy = cli.askApproval
 	}
-	if cli.search {
-		if cfg.Features == nil {
-			cfg.Features = map[string]bool{}
-		}
-		cfg.Features["web_search_request"] = true
+	rt = applyRuntimeKVOverrides(rt, []string(cli.configOverrides))
+	if strings.TrimSpace(rt.DefaultLanguage) == "" {
+		rt.DefaultLanguage = i18n.DefaultLanguage.Code()
 	}
 
 	workdir := resolveWorkdir(cli.workdir)
@@ -196,7 +185,7 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		}
 	}
 
-	client := buildModelClient(cfg)
+	client := buildModelClient(endpoint, rt.Model, cli.oss)
 	system := instructions.Discover(workdir)
 	bus := events.NewBus()
 	defer bus.Close()
@@ -209,17 +198,16 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 			defer closer.Close()
 		}
 	}
-	pol := policy.Policy{SandboxMode: cfg.SandboxMode, ApprovalPolicy: cfg.ApprovalPolicy}
-	roots := append([]string{}, cfg.WorkspaceDirs...)
-	roots = append(roots, workdir)
+	pol := policy.Policy{SandboxMode: rt.SandboxMode, ApprovalPolicy: rt.ApprovalPolicy}
+	roots := append([]string{}, workdir)
 	roots = append(roots, []string(cli.addDirs)...)
-	runner := sandbox.NewRunner(cfg.SandboxMode, roots...)
+	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
 	approver := toolengine.NewUIApprover()
 	disp := dispatcher.New(pol, runner, bus, workdir, approver)
 	disp.Start(context.Background())
 
 	manager := events.NewManager(events.ManagerConfig{})
-	toolTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+	toolTimeout := time.Duration(rt.RequestTimeoutSecs) * time.Second
 	if toolTimeout == 0 {
 		toolTimeout = 2 * time.Minute
 	}
@@ -227,10 +215,10 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		Manager:        manager,
 		Client:         client,
 		Bus:            bus,
-		Defaults:       execution.SessionDefaults{Model: cfg.Model, System: system, ReasoningEffort: cfg.ReasoningEffort, Language: cfg.DefaultLanguage},
+		Defaults:       execution.SessionDefaults{Model: rt.Model, System: system, ReasoningEffort: rt.ReasoningEffort, Language: rt.DefaultLanguage},
 		ToolTimeout:    toolTimeout,
-		RequestTimeout: time.Duration(cfg.RequestTimeout) * time.Second,
-		Retries:        cfg.Retries,
+		RequestTimeout: time.Duration(rt.RequestTimeoutSecs) * time.Second,
+		Retries:        rt.Retries,
 	})
 	engine.Start(context.Background())
 	defer engine.Close()
@@ -249,12 +237,12 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 	uiResult, err := repl.RunUI(repl.UIOptions{
 		Engine:          engine,
 		Gateway:         gateway,
-		Model:           cfg.Model,
-		Reasoning:       cfg.ReasoningEffort,
-		Sandbox:         cfg.SandboxMode,
+		Model:           rt.Model,
+		Reasoning:       rt.ReasoningEffort,
+		Sandbox:         rt.SandboxMode,
 		Workdir:         workdir,
 		InitialPrompt:   cli.prompt,
-		Language:        cfg.DefaultLanguage,
+		Language:        rt.DefaultLanguage,
 		InitialMessages: attachments,
 		Policy:          pol,
 		Events:          bus,
@@ -293,168 +281,28 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 	printExitSummary(savedID, usage)
 }
 
-func buildModelClient(cfg config.Config) agent.ModelClient {
-	apiKey, err := auth.LoadAPIKey()
-	if err != nil {
-		log.Fatalf("failed to load ~/.echo/auth.json: %v", err)
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		log.Fatalf("no API key found in ~/.echo/auth.json; run `echo-cli login --with-api-key` to configure")
-	}
-	provider := strings.ToLower(cfg.ModelProvider)
-	if provider == "" {
-		provider = "openai"
-	}
-	settings := resolveProviderSettings(cfg, provider)
-	switch {
-	case provider == "openai":
-		client, err := openaimodel.New(openaimodel.Options{
-			APIKey:  apiKey,
-			BaseURL: settings.BaseURL,
-			Model:   cfg.Model,
-			WireAPI: settings.WireAPI,
-		})
-		if err != nil {
-			log.Fatalf("failed to init Echo Team client: %v", err)
-		}
-		return client
-	case strings.HasPrefix(provider, "oss"):
+func buildModelClient(endpoint config.Config, model string, oss bool) agent.ModelClient {
+	if oss {
 		log.Info("OSS provider configured; using echo fallback (implement OSS client to enable responses).")
 		return agent.EchoClient{Prefix: "assistant: "}
-	default:
-		client, err := openaimodel.New(openaimodel.Options{
-			APIKey:  apiKey,
-			BaseURL: settings.BaseURL,
-			Model:   cfg.Model,
-			WireAPI: settings.WireAPI,
-		})
-		if err != nil {
-			log.Fatalf("failed to init client for provider %s: %v", provider, err)
-		}
-		return client
 	}
-}
-
-type providerSettings struct {
-	BaseURL string
-	WireAPI string
-}
-
-func resolveProviderSettings(cfg config.Config, provider string) providerSettings {
-	settings := providerSettings{WireAPI: "chat"}
-	if env := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); env != "" {
-		settings.BaseURL = env
+	token := strings.TrimSpace(endpoint.Token)
+	if token == "" {
+		return agent.EchoClient{Prefix: "assistant: "}
 	}
-	if cfg.Raw == nil {
-		return settings
+	if strings.TrimSpace(endpoint.URL) == "" {
+		log.Warnf("empty url in config; falling back to echo mode")
+		return agent.EchoClient{Prefix: "assistant: "}
 	}
-	rawProviders, ok := cfg.Raw["model_providers"]
-	if !ok {
-		return settings
+	client, err := anthropicmodel.New(anthropicmodel.Options{
+		Token:   token,
+		BaseURL: endpoint.URL,
+		Model:   model,
+	})
+	if err != nil {
+		log.Fatalf("failed to init anthropic client: %v", err)
 	}
-	switch mp := rawProviders.(type) {
-	case map[string]any:
-		if entry, ok := mp[provider]; ok {
-			if base := baseURLFromEntry(entry); base != "" && settings.BaseURL == "" {
-				settings.BaseURL = base
-			}
-			if wire := wireAPIFromEntry(entry); wire != "" {
-				settings.WireAPI = wire
-			}
-		}
-	}
-	return settings
-}
-
-func baseURLFromEntry(entry any) string {
-	m, ok := entry.(map[string]any)
-	if !ok {
-		return ""
-	}
-	if val, ok := m["base_url"]; ok {
-		if s, ok := val.(string); ok {
-			return strings.TrimSpace(s)
-		}
-	}
-	if val, ok := m["base-url"]; ok {
-		if s, ok := val.(string); ok {
-			return strings.TrimSpace(s)
-		}
-	}
-	return ""
-}
-
-func wireAPIFromEntry(entry any) string {
-	m, ok := entry.(map[string]any)
-	if !ok {
-		return ""
-	}
-	if val, ok := m["wire_api"]; ok {
-		if s, ok := val.(string); ok {
-			return strings.ToLower(strings.TrimSpace(s))
-		}
-	}
-	if val, ok := m["wire-api"]; ok {
-		if s, ok := val.(string); ok {
-			return strings.ToLower(strings.TrimSpace(s))
-		}
-	}
-	return ""
-}
-
-func applyOSSBootstrap(cfg config.Config, providerOverride string) config.Config {
-	provider := cfg.ModelProvider
-	if providerOverride != "" {
-		provider = "oss:" + providerOverride
-	}
-	if provider == "" || provider == "oss" {
-		provider = "oss:lmstudio"
-	}
-	if !strings.HasPrefix(provider, "oss") {
-		provider = "oss"
-	}
-	cfg.ModelProvider = provider
-	if cfg.Model == "" {
-		if def := defaultOSSModel(provider); def != "" {
-			cfg.Model = def
-		}
-	}
-	if cfg.Raw == nil {
-		cfg.Raw = map[string]any{}
-	}
-	cfg.Raw["show_raw_agent_reasoning"] = true
-	if err := ensureOSSProviderReady(provider); err != nil {
-		log.Warnf("%v", err)
-	}
-	return cfg
-}
-
-func defaultOSSModel(provider string) string {
-	switch {
-	case strings.Contains(provider, "ollama"):
-		return "llama3.1"
-	case strings.Contains(provider, "lmstudio"):
-		return "gpt-oss:20b"
-	default:
-		return "gpt-oss:20b"
-	}
-}
-
-func ensureOSSProviderReady(provider string) error {
-	switch {
-	case strings.Contains(provider, "ollama"):
-		if _, err := exec.LookPath("ollama"); err != nil {
-			return fmt.Errorf("ollama provider selected but `ollama` binary not found in PATH")
-		}
-	case strings.Contains(provider, "lmstudio"):
-		if _, err := exec.LookPath("lmstudio"); err != nil {
-			if _, errAlt := exec.LookPath("lm-studio"); errAlt != nil {
-				return fmt.Errorf("lmstudio provider selected but LM Studio CLI is not available in PATH")
-			}
-		}
-	}
-	return nil
+	return client
 }
 
 type usageSummary struct {

@@ -184,58 +184,67 @@ func execMain(root rootArgs, args []string) {
 		colorMode = "auto"
 	}
 
-	cfg, err := config.Load(cfgPath)
+	endpoint, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
-	cfg = config.ApplyOverrides(cfg, config.Overrides{
-		Model:           modelOverride,
-		ModelProvider:   providerOverride,
-		ReasoningEffort: reasoningOverride,
-		RequestTimeout:  timeoutOverride,
-		Retries:         retriesOverride,
-		Path:            cfgPath,
-		ConfigProfile:   configProfile,
-	})
-	cfg = config.ApplyKVOverrides(cfg, []string(configOverrides))
-	if oss {
-		cfg = applyOSSBootstrap(cfg, localProvider)
+	endpoint = config.ApplyKVOverrides(endpoint, []string(configOverrides))
+
+	rt := defaultRuntimeConfig()
+	if strings.TrimSpace(modelOverride) != "" {
+		rt.Model = strings.TrimSpace(modelOverride)
 	}
-	if !oss && localProvider != "" {
-		cfg.ModelProvider = localProvider
+	if strings.TrimSpace(reasoningOverride) != "" {
+		rt.ReasoningEffort = strings.TrimSpace(reasoningOverride)
+	}
+	if timeoutOverride > 0 {
+		rt.RequestTimeoutSecs = timeoutOverride
+	}
+	if retriesOverride > 0 {
+		rt.Retries = retriesOverride
 	}
 	if sandboxMode != "" {
-		cfg.SandboxMode = sandboxMode
+		rt.SandboxMode = sandboxMode
 	}
 	if fullAuto {
-		cfg.SandboxMode = "workspace-write"
-		if cfg.ApprovalPolicy == "" {
-			cfg.ApprovalPolicy = "on-request"
+		rt.SandboxMode = "workspace-write"
+		if strings.TrimSpace(rt.ApprovalPolicy) == "" {
+			rt.ApprovalPolicy = "on-request"
 		}
 	}
 	if dangerouslyBypass {
-		cfg.SandboxMode = "danger-full-access"
-		cfg.ApprovalPolicy = "never"
+		rt.SandboxMode = "danger-full-access"
+		rt.ApprovalPolicy = "never"
 	}
 	if askApproval != "" {
-		cfg.ApprovalPolicy = askApproval
+		rt.ApprovalPolicy = askApproval
 	}
 	if autoApprove {
-		cfg.ApprovalPolicy = "never"
+		rt.ApprovalPolicy = "never"
 	}
 	if autoDeny {
-		cfg.ApprovalPolicy = "untrusted"
+		rt.ApprovalPolicy = "untrusted"
 	}
 	if approvalMode != "" {
-		cfg.ApprovalPolicy = approvalMode
+		rt.ApprovalPolicy = approvalMode
+	}
+	rt = applyRuntimeKVOverrides(rt, []string(configOverrides))
+	if strings.TrimSpace(providerOverride) != "" {
+		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token", providerOverride)
+	}
+	if strings.TrimSpace(configProfile) != "" {
+		log.Warnf("config profile %q is ignored; echo-cli now configures only url/token", configProfile)
+	}
+	if !oss && strings.TrimSpace(localProvider) != "" {
+		log.Warnf("local-provider=%q ignored unless --oss is set", localProvider)
 	}
 	if skipGitRepoCheck {
 		log.Info("skip-git-repo-check requested (no-op placeholder)")
 	}
 
 	workdir = resolveWorkdir(workdir)
-	pol := policy.Policy{SandboxMode: cfg.SandboxMode, ApprovalPolicy: cfg.ApprovalPolicy}
-	client := buildModelClient(cfg)
+	pol := policy.Policy{SandboxMode: rt.SandboxMode, ApprovalPolicy: rt.ApprovalPolicy}
+	client := buildModelClient(endpoint, rt.Model, oss)
 	system := instructions.Discover(workdir)
 	outputSchemaContent := ""
 	if outputSchema != "" {
@@ -249,10 +258,9 @@ func execMain(root rootArgs, args []string) {
 			outputSchemaContent = string(data)
 		}
 	}
-	roots := append([]string{}, cfg.WorkspaceDirs...)
-	roots = append(roots, workdir)
+	roots := append([]string{}, workdir)
 	roots = append(roots, []string(addDirs)...)
-	runner := sandbox.NewRunner(cfg.SandboxMode, roots...)
+	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
 	bus := events.NewBus()
 	defer bus.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,7 +276,7 @@ func execMain(root rootArgs, args []string) {
 		emitHuman(ev)
 	}
 	manager := events.NewManager(events.ManagerConfig{})
-	toolTimeout := time.Duration(cfg.RequestTimeout) * time.Second
+	toolTimeout := time.Duration(rt.RequestTimeoutSecs) * time.Second
 	if toolTimeout == 0 {
 		toolTimeout = 2 * time.Minute
 	}
@@ -276,10 +284,10 @@ func execMain(root rootArgs, args []string) {
 		Manager:        manager,
 		Client:         client,
 		Bus:            bus,
-		Defaults:       execution.SessionDefaults{Model: cfg.Model, System: system, OutputSchema: outputSchemaContent, ReasoningEffort: cfg.ReasoningEffort, ReviewMode: reviewMode, Language: cfg.DefaultLanguage},
+		Defaults:       execution.SessionDefaults{Model: rt.Model, System: system, OutputSchema: outputSchemaContent, ReasoningEffort: rt.ReasoningEffort, ReviewMode: reviewMode, Language: rt.DefaultLanguage},
 		ToolTimeout:    toolTimeout,
-		RequestTimeout: time.Duration(cfg.RequestTimeout) * time.Second,
-		Retries:        cfg.Retries,
+		RequestTimeout: time.Duration(rt.RequestTimeoutSecs) * time.Second,
+		Retries:        rt.Retries,
 	})
 	engine.Start(ctx)
 	defer engine.Close()
@@ -379,11 +387,11 @@ func execMain(root rootArgs, args []string) {
 		{Role: "user", Content: prompt},
 	}, events.InputContext{
 		SessionID:       sessionID,
-		Model:           cfg.Model,
+		Model:           rt.Model,
 		System:          system,
 		OutputSchema:    outputSchemaContent,
-		Language:        cfg.DefaultLanguage,
-		ReasoningEffort: cfg.ReasoningEffort,
+		Language:        rt.DefaultLanguage,
+		ReasoningEffort: rt.ReasoningEffort,
 		ReviewMode:      reviewMode,
 		Attachments:     attachments,
 	})

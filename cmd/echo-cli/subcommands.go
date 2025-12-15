@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"echo-cli/internal/auth"
 	"echo-cli/internal/config"
 	"echo-cli/internal/features"
 	"echo-cli/internal/policy"
@@ -24,14 +23,14 @@ func reviewMain(root rootArgs, args []string) {
 
 func loginMain(root rootArgs, args []string) {
 	if len(args) > 0 && args[0] == "status" {
-		key, err := auth.LoadAPIKey()
+		cfg, err := config.Load("")
 		if err != nil {
 			log.Fatalf("failed to load credentials: %v", err)
 		}
-		if key == "" {
+		if strings.TrimSpace(cfg.Token) == "" {
 			fmt.Println("not logged in")
 		} else {
-			fmt.Println("api key configured")
+			fmt.Println("token configured")
 		}
 		return
 	}
@@ -42,7 +41,7 @@ func loginMain(root rootArgs, args []string) {
 	var deviceAuth bool
 	var issuer string
 	var clientID string
-	fs.BoolVar(&withAPIKey, "with-api-key", false, "Read the API key from stdin")
+	fs.BoolVar(&withAPIKey, "with-api-key", false, "Read the auth token from stdin")
 	fs.StringVar(&apiKey, "api-key", "", "(deprecated) Use --with-api-key and pipe the value instead")
 	fs.BoolVar(&deviceAuth, "device-auth", false, "Use device code login (not supported in echo-cli)")
 	fs.StringVar(&issuer, "experimental_issuer", "", "Experimental issuer base URL (unused placeholder)")
@@ -52,7 +51,7 @@ func loginMain(root rootArgs, args []string) {
 	}
 
 	if apiKey != "" {
-		log.Fatalf("The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | echo-cli login --with-api-key`.")
+		log.Fatalf("The --api-key flag is no longer supported. Pipe the token instead, e.g. `printenv ANTHROPIC_AUTH_TOKEN | echo-cli login --with-api-key`.")
 	}
 	if deviceAuth {
 		log.Fatalf("Device auth is not implemented in echo-cli; please use --with-api-key instead.")
@@ -63,23 +62,35 @@ func loginMain(root rootArgs, args []string) {
 	var key string
 	switch {
 	case withAPIKey:
-		key = readAPIKeyFromStdin()
+		key = readTokenFromStdin()
+	case strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")) != "":
+		key = strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
 	case strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "":
 		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	default:
-		key = promptAPIKey()
+		key = promptToken()
 	}
-	if err := auth.SaveAPIKey(key); err != nil {
-		log.Fatalf("failed to save API key: %v", err)
+	cfg, err := config.Load("")
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
-	fmt.Println("API key saved.")
+	cfg.Token = key
+	if err := config.Save("", cfg); err != nil {
+		log.Fatalf("failed to save token: %v", err)
+	}
+	fmt.Println("Token saved.")
 }
 
 func logoutMain(root rootArgs, args []string) {
-	if err := auth.Clear(); err != nil {
-		log.Fatalf("failed to remove stored credentials: %v", err)
+	cfg, err := config.Load("")
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
-	fmt.Println("Logged out and cleared stored credentials.")
+	cfg.Token = ""
+	if err := config.Save("", cfg); err != nil {
+		log.Fatalf("failed to clear stored token: %v", err)
+	}
+	fmt.Println("Logged out and cleared stored token.")
 }
 
 func applyMain(root rootArgs, args []string) {
@@ -108,18 +119,14 @@ func applyMain(root rootArgs, args []string) {
 		log.Fatalf("failed to read patch %s: %v", patchPath, err)
 	}
 
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
-	}
-	cfg = config.ApplyKVOverrides(cfg, prependOverrides(root.overrides, nil))
+	_ = cfgPath
+	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
 	if sandboxMode != "" {
-		cfg.SandboxMode = sandboxMode
+		rt.SandboxMode = sandboxMode
 	}
 	workdir = resolveWorkdir(workdir)
-	roots := append([]string{}, cfg.WorkspaceDirs...)
-	roots = append(roots, workdir)
-	runner := sandbox.NewRunner(cfg.SandboxMode, roots...)
+	roots := []string{workdir}
+	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
 	if err := runner.ApplyPatch(context.Background(), workdir, string(data)); err != nil {
 		log.Fatalf("apply patch failed: %v", err)
 	}
@@ -145,19 +152,15 @@ func sandboxMain(root rootArgs, args []string) {
 	}
 	command := strings.Join(fs.Args(), " ")
 
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
-	}
-	cfg = config.ApplyKVOverrides(cfg, prependOverrides(root.overrides, nil))
+	_ = cfgPath
+	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
 	if sandboxMode != "" {
-		cfg.SandboxMode = sandboxMode
+		rt.SandboxMode = sandboxMode
 	}
 	workdir = resolveWorkdir(workdir)
-	roots := append([]string{}, cfg.WorkspaceDirs...)
-	roots = append(roots, workdir)
+	roots := append([]string{}, workdir)
 	roots = append(roots, []string(addDirs)...)
-	runner := sandbox.NewRunner(cfg.SandboxMode, roots...)
+	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
 	out, code, err := runner.RunCommand(context.Background(), workdir, command)
 	if err != nil {
 		log.Fatalf("sandboxed command failed (exit %d): %v", code, err)
@@ -174,12 +177,12 @@ func execpolicyMain(root rootArgs, args []string) {
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parse execpolicy args: %v", err)
 	}
-	cfg := config.ApplyKVOverrides(config.Default(), prependOverrides(root.overrides, nil))
+	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
 	if sandboxMode == "" {
-		sandboxMode = cfg.SandboxMode
+		sandboxMode = rt.SandboxMode
 	}
 	if approvalPolicy == "" {
-		approvalPolicy = cfg.ApprovalPolicy
+		approvalPolicy = rt.ApprovalPolicy
 	}
 	pol := policy.Policy{SandboxMode: sandboxMode, ApprovalPolicy: approvalPolicy}
 	cmd := pol.AllowCommand()
@@ -219,45 +222,64 @@ func stdioToUDSMain(root rootArgs, args []string) {
 }
 
 func featuresMain(root rootArgs, args []string) {
-	var cfgPath string
 	var overrides stringSlice
 	fs := flag.NewFlagSet("features", flag.ExitOnError)
-	fs.StringVar(&cfgPath, "config", "", "Path to config file (default ~/.echo/config.toml)")
 	fs.Var(&overrides, "c", "Override config value key=value (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parse features args: %v", err)
 	}
 	allOverrides := prependOverrides(root.overrides, []string(overrides))
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
-	}
-	cfg = config.ApplyKVOverrides(cfg, allOverrides)
 	for _, spec := range features.Specs {
-		enabled := cfg.Features[spec.Key]
+		enabled := featureEnabled(spec.Key, allOverrides)
 		fmt.Fprintf(os.Stdout, "%s\t%s\t%t\n", spec.Key, spec.Stage, enabled)
 	}
 }
 
-func readAPIKeyFromStdin() string {
+func featureEnabled(key string, overrides []string) bool {
+	enabled := features.DefaultEnabled(key)
+	for _, raw := range overrides {
+		parts := strings.SplitN(raw, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if !strings.HasPrefix(k, "features.") {
+			continue
+		}
+		name := strings.TrimPrefix(k, "features.")
+		if !strings.EqualFold(name, key) {
+			continue
+		}
+		switch strings.ToLower(v) {
+		case "true", "1", "t", "yes", "y", "on":
+			enabled = true
+		case "false", "0", "f", "no", "n", "off":
+			enabled = false
+		}
+	}
+	return enabled
+}
+
+func readTokenFromStdin() string {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		log.Fatalf("failed to read API key from stdin: %v", err)
+		log.Fatalf("failed to read token from stdin: %v", err)
 	}
 	key := strings.TrimSpace(string(data))
 	if key == "" {
-		log.Fatalf("no API key provided on stdin")
+		log.Fatalf("no token provided on stdin")
 	}
 	return key
 }
 
-func promptAPIKey() string {
-	fmt.Print("Enter API key: ")
+func promptToken() string {
+	fmt.Print("Enter token: ")
 	reader := bufio.NewReader(os.Stdin)
 	key, _ := reader.ReadString('\n')
 	key = strings.TrimSpace(key)
 	if key == "" {
-		log.Fatalf("empty API key provided")
+		log.Fatalf("empty token provided")
 	}
 	return key
 }

@@ -30,9 +30,12 @@ go run ./cmd/echo-cli exec --prompt "任务"
 
 ## 設定と環境
 
-- `OPENAI_API_KEY`: 任意。未設定の場合はローカルテスト向けに応答をエコーします。
-- 設定ファイル: `~/.echo/config.toml`。`--config <path>` で上書き可能。フィールドは `internal/config/config.go` を参照してください。
-- `default_language` で優先する応答言語を指定（デフォルトは中国語）。
+- 環境変数（優先度が最も高い）:
+  - `ANTHROPIC_BASE_URL`（例: `https://open.bigmodel.cn/api/anthropic`）
+  - `ANTHROPIC_AUTH_TOKEN`（認証トークン）
+- 設定ファイル: `~/.echo/config.toml`（`--config <path>` で上書き可能）には次の 2 つのみ:
+  - `url = "..."` と `token = "..."`
+- それ以外の実行設定（sandbox/approval/language/timeout 等）は CLI フラグまたは `-c key=value` で指定し、設定ファイルには保存しません。
 
 ## CLI（M1+）
 
@@ -40,6 +43,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--model <name>`: モデルを上書き。
 - `--cd <dir>`: ステータスバーに表示する作業ディレクトリを設定。
 - `--prompt "<text>"`: 初期ユーザーメッセージ（位置引数としても利用可能）。
+- `ping`: 設定された Anthropic 互換エンドポイントに対して疎通確認を行い、返答テキストを出力。
 - `exec <prompt>`: 非対話の JSONL 実行。`--session <id>` / `--resume-last` によるセッション永続化をサポート。
 - 承認/サンドボックス: `sandbox_mode` と `approval_policy` に従います（read-only は書き込み/コマンドをブロック、on-request/untrusted は確認を促します）。
 
@@ -51,8 +55,8 @@ go run ./cmd/echo-cli exec --prompt "任务"
 ## コード構成
 
 - `cmd/echo-cli`: CLI エントリ。
-- `internal/config`: 設定読み込みと CLI オーバーライド。
-- `internal/agent`: エージェントループとモデル抽象化（Echo Team クライアントとストリーミングサポートを含む）。
+- `internal/config`: エンドポイント設定の読み込み（url/token）。
+- `internal/agent`: エージェントループとモデル抽象化（Anthropic 互換クライアントとストリーミング）。
 - `internal/tui`: Bubble Tea UI（トランスクリプト、入力欄、ステータスバー、@ 検索、スラッシュコマンド、承認、セッションピッカー）。
 - `internal/policy`: サンドボックス/承認制御。
 - `internal/tools`: シェルとパッチのヘルパー（サンドボックスの配管はスタブ）。

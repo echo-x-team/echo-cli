@@ -30,9 +30,12 @@ go run ./cmd/echo-cli exec --prompt "任务"
 
 ## Configuration & Environment
 
-- `OPENAI_API_KEY`: optional; when unset the app echoes responses for local testing.
-- Config file: `~/.echo/config.toml` or override via `--config <path>`. Fields: see `internal/config/config.go`.
-- `default_language` in config picks the preferred response language (defaults to Chinese).
+- Env (highest priority):
+  - `ANTHROPIC_BASE_URL` (e.g. `https://open.bigmodel.cn/api/anthropic`)
+  - `ANTHROPIC_AUTH_TOKEN` (provider auth token)
+- Config file: `~/.echo/config.toml` (or override via `--config <path>`):
+  - `url = "..."` and `token = "..."`
+- Other runtime settings (sandbox/approval/language/timeouts) are controlled via CLI flags or `-c key=value` overrides and are not persisted in the config file.
 
 ## CLI (M1+)
 
@@ -40,7 +43,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--model <name>`: override model.
 - `--cd <dir>`: set working directory shown in the status bar.
 - `--prompt "<text>"`: initial user message (also positional).
-- `ping`: ping configured model provider and print the returned text (uses `model_providers.<provider>.api_key` + `base_url`/`port`).
+- `ping`: ping configured Anthropic-compatible endpoint and print the returned text.
 - `exec <prompt>`: non-interactive JSONL run with session persistence; supports `--session <id>` / `--resume-last`.
 - Approval/sandbox: honors `sandbox_mode` and `approval_policy` (read-only blocks writes/commands; on-request/untrusted prompts).
 
@@ -52,8 +55,8 @@ go run ./cmd/echo-cli exec --prompt "任务"
 ## Code layout
 
 - `cmd/echo-cli`: CLI entry.
-- `internal/config`: config loading/CLI overrides.
-- `internal/agent`: agent loop + model abstraction (including Echo Team client with streaming support).
+- `internal/config`: endpoint config loading (url/token).
+- `internal/agent`: agent loop + model abstraction (Anthropic-compatible client + streaming).
 - `internal/tui`: Bubble Tea UI (transcript + composer + status bar + @ search + slash commands + approvals + session picker).
 - `internal/policy`: sandbox/approval gating.
 - `internal/tools`: shell + patch helpers (sandbox plumbing stubbed).
