@@ -264,6 +264,31 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	defer stopTools()
 	publishedMarkers := map[string]struct{}{}
 
+	exitReason := "unknown"
+	exitStage := "unknown"
+	var exitErr error
+	exitFinalContent := ""
+	exitFinalItems := 0
+	defer func() {
+		fields := logger.Fields{
+			"session":      submission.SessionID,
+			"submission":   submission.ID,
+			"model":        turnCtx.Model,
+			"sequence":     seq,
+			"exit_reason":  exitReason,
+			"exit_stage":   exitStage,
+			"final_items":  exitFinalItems,
+			"final_length": len(exitFinalContent),
+		}
+		if exitErr != nil {
+			fields["exit_error"] = sanitizeLogText(exitErr.Error())
+		}
+		if strings.TrimSpace(exitFinalContent) != "" {
+			fields["final_preview"] = sanitizeLogText(previewForLog(exitFinalContent, 600))
+		}
+		llmLog.WithField("type", "run_task.exit").WithField("dir", "agent").WithFields(fields).Info("run_task exit")
+	}()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			// Treat cancellation as an aborted turn to mirror Codex behaviour.
@@ -271,11 +296,21 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 				"sequence": seq,
 				"model":    turnCtx.Model,
 			})
+			exitReason = "context_done"
+			exitStage = "ctx_check"
+			exitErr = err
 			return err
 		}
 
 		turn, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedMarkers)
 		if err != nil {
+			exitErr = err
+			exitStage = "run_turn"
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				exitReason = "context_done"
+			} else {
+				exitReason = "error"
+			}
 			return err
 		}
 		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
@@ -298,6 +333,10 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 				},
 				Metadata: submission.Metadata,
 			})
+			exitReason = "completed_final"
+			exitStage = "final_no_responses"
+			exitFinalContent = turn.finalContent
+			exitFinalItems = len(turn.itemsToRecord)
 			return nil
 		}
 	}

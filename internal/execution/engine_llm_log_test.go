@@ -123,3 +123,119 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 		t.Fatalf("expected both outgoing and incoming llm logs, foundOut=%t foundIn=%t entries=%d", foundOut, foundIn, len(streamEntries))
 	}
 }
+
+type discardPublisher struct{}
+
+func (discardPublisher) Publish(_ context.Context, _ events.Event) error { return nil }
+
+func TestRunTaskLogsExitReasonToLLMLog(t *testing.T) {
+	oldLLMLog := llmLog
+	oldErrorLog := errorLog
+	defer func() {
+		llmLog = oldLLMLog
+		errorLog = oldErrorLog
+	}()
+
+	l := logrus.New()
+	l.SetOutput(io.Discard)
+	hook := &captureHook{}
+	l.AddHook(hook)
+	llmLog = logrus.NewEntry(l)
+	errorLog = logrus.NewEntry(l)
+
+	engine := &Engine{
+		contexts:       NewContextManager(SessionDefaults{Model: "gpt-test"}),
+		client:         fakeModelClient{chunks: []string{"hello"}},
+		requestTimeout: 500 * time.Millisecond,
+		retries:        0,
+		toolCtx:        map[string]toolCallContext{},
+	}
+
+	sub := events.Submission{SessionID: "sess-exit", ID: "sub-exit"}
+	state := TurnState{
+		Context: TurnContext{
+			Model: "gpt-test",
+			History: []agent.Message{
+				{Role: agent.RoleUser, Content: "hi"},
+			},
+		},
+	}
+
+	if err := engine.runTask(context.Background(), sub, state, discardPublisher{}); err != nil {
+		t.Fatalf("runTask failed: %v", err)
+	}
+
+	var found capturedEntry
+	ok := false
+	for _, e := range hook.snapshot() {
+		if typ, _ := e.Data["type"].(string); typ == "run_task.exit" {
+			found = e
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("expected run_task.exit log entry")
+	}
+	if reason, _ := found.Data["exit_reason"].(string); reason != "completed_final" {
+		t.Fatalf("expected exit_reason=completed_final, got %v (msg=%q)", found.Data["exit_reason"], found.Message)
+	}
+	if stage, _ := found.Data["exit_stage"].(string); stage != "final_no_responses" {
+		t.Fatalf("expected exit_stage=final_no_responses, got %v (msg=%q)", found.Data["exit_stage"], found.Message)
+	}
+	if dir, _ := found.Data["dir"].(string); dir != "agent" {
+		t.Fatalf("expected dir=agent, got %v (msg=%q)", found.Data["dir"], found.Message)
+	}
+}
+
+func TestRunTaskLogsExitReasonWhenContextCancelled(t *testing.T) {
+	oldLLMLog := llmLog
+	oldErrorLog := errorLog
+	defer func() {
+		llmLog = oldLLMLog
+		errorLog = oldErrorLog
+	}()
+
+	l := logrus.New()
+	l.SetOutput(io.Discard)
+	hook := &captureHook{}
+	l.AddHook(hook)
+	llmLog = logrus.NewEntry(l)
+	errorLog = logrus.NewEntry(l)
+
+	engine := &Engine{
+		contexts:       NewContextManager(SessionDefaults{Model: "gpt-test"}),
+		client:         fakeModelClient{chunks: []string{"hello"}},
+		requestTimeout: 500 * time.Millisecond,
+		retries:        0,
+		toolCtx:        map[string]toolCallContext{},
+	}
+
+	sub := events.Submission{SessionID: "sess-cancel", ID: "sub-cancel"}
+	state := TurnState{Context: TurnContext{Model: "gpt-test"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := engine.runTask(ctx, sub, state, discardPublisher{}); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+
+	var found capturedEntry
+	ok := false
+	for _, e := range hook.snapshot() {
+		if typ, _ := e.Data["type"].(string); typ == "run_task.exit" {
+			found = e
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("expected run_task.exit log entry")
+	}
+	if reason, _ := found.Data["exit_reason"].(string); reason != "context_done" {
+		t.Fatalf("expected exit_reason=context_done, got %v (msg=%q)", found.Data["exit_reason"], found.Message)
+	}
+	if stage, _ := found.Data["exit_stage"].(string); stage != "ctx_check" {
+		t.Fatalf("expected exit_stage=ctx_check, got %v (msg=%q)", found.Data["exit_stage"], found.Message)
+	}
+}
