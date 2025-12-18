@@ -27,7 +27,7 @@ func ExtractPatchPaths(patch string) ([]string, error) {
 		return nil, fmt.Errorf("empty patch")
 	}
 
-	if strings.Contains(patch, "*** Begin Patch") {
+	if strings.HasPrefix(patch, "*** Begin Patch") {
 		ops, err := parseBeginPatch(patch)
 		if err != nil {
 			return nil, err

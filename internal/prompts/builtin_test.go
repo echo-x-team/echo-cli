@@ -22,6 +22,11 @@ func TestBuiltinPromptsLoaded(t *testing.T) {
 			t.Fatalf("empty builtin prompt %q", name)
 		}
 	}
+	if core, ok := Builtin(PromptCore); ok {
+		if !strings.Contains(core, "*** Add File:") {
+			t.Fatalf("core prompt should include Echo Patch directive guidance")
+		}
+	}
 	if strings.TrimSpace(ReviewModeSystemPrompt) == "" {
 		t.Fatalf("review prompt should not be empty")
 	}

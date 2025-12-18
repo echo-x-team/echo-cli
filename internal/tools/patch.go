@@ -32,7 +32,7 @@ func ApplyPatch(ctx context.Context, workdir string, diff string) error {
 	if strings.TrimSpace(diff) == "" {
 		return fmt.Errorf("empty patch content")
 	}
-	if strings.Contains(diff, "*** Begin Patch") {
+	if strings.HasPrefix(strings.TrimSpace(diff), "*** Begin Patch") {
 		ops, err := parseBeginPatch(diff)
 		if err != nil {
 			return err
@@ -119,7 +119,7 @@ func parseBeginPatch(text string) ([]patchOp, error) {
 		case line == "":
 			idx++
 		default:
-			return nil, fmt.Errorf("invalid patch directive: %s", line)
+			return nil, fmt.Errorf("invalid patch directive: %s (supported: *** Add File:, *** Delete File:, *** Update File:)", line)
 		}
 	}
 	return nil, fmt.Errorf("invalid patch: missing *** End Patch")

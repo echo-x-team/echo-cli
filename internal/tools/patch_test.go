@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,22 @@ func TestApplyPatchBeginPatchMove(t *testing.T) {
 	}
 	if got := string(data); got != "one\nTWO\n" {
 		t.Fatalf("unexpected moved content: %q", got)
+	}
+}
+
+func TestApplyPatchBeginPatch_InvalidDirective(t *testing.T) {
+	dir := t.TempDir()
+
+	patch := `*** Begin Patch
+*** Create File: bad.txt
++nope
+*** End Patch`
+
+	err := ApplyPatch(context.Background(), dir, patch)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid patch directive") || !strings.Contains(err.Error(), "*** Add File") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

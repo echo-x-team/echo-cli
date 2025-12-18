@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestApplyPatchToolSchema(t *testing.T) {
 	var spec *ToolSpec
@@ -13,6 +16,9 @@ func TestApplyPatchToolSchema(t *testing.T) {
 	if spec == nil {
 		t.Fatalf("apply_patch tool not found")
 	}
+	if !strings.Contains(spec.Description, "*** Add File:") {
+		t.Fatalf("apply_patch.description should mention Echo Patch directives, got: %q", spec.Description)
+	}
 
 	params := spec.Parameters
 	if got := params["type"]; got != "object" {
@@ -24,6 +30,11 @@ func TestApplyPatchToolSchema(t *testing.T) {
 	}
 	if _, ok := props["patch"]; !ok {
 		t.Fatalf("patch property missing")
+	}
+	if patchProp, ok := props["patch"].(map[string]any); ok {
+		if desc, _ := patchProp["description"].(string); !strings.Contains(desc, "*** Add File") {
+			t.Fatalf("apply_patch.patch.description should mention directive names, got: %q", desc)
+		}
 	}
 	if _, ok := props["path"]; ok {
 		t.Fatalf("path property should be omitted for strict schema")

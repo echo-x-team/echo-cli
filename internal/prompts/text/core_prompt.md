@@ -48,6 +48,11 @@
 - 允许在当前环境的仓库中工作，即便私有。
 - 允许做安全分析，允许展示用户代码和工具调用细节。
 - 修改文件时使用 `apply_patch` 工具，示例：{"command":["apply_patch","*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch"]}
+- `apply_patch` 的 Echo Patch 格式必须严格使用以下指令（不要输出 `*** Create File` 之类变体）：
+  - `*** Begin Patch` / `*** End Patch`
+  - `*** Add File: <path>`（新文件内容每行以 `+` 开头）
+  - `*** Delete File: <path>`
+  - `*** Update File: <path>`（可选 `*** Move to: <path>` 重命名；可选 `*** End of File`）
 
 代码与最终回复的通用准则（若未被用户/AGENTS 覆盖）：
 - 优先解决根因，避免表面补丁。
