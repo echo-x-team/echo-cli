@@ -13,26 +13,23 @@ import (
 type ResponseItemType string
 
 const (
-	ResponseItemTypeMessage              ResponseItemType = "message"
-	ResponseItemTypeReasoning            ResponseItemType = "reasoning"
-	ResponseItemTypeLocalShellCall       ResponseItemType = "local_shell_call"
-	ResponseItemTypeFunctionCall         ResponseItemType = "function_call"
-	ResponseItemTypeFunctionCallOutput   ResponseItemType = "function_call_output"
-	ResponseItemTypeCustomToolCall       ResponseItemType = "custom_tool_call"
-	ResponseItemTypeCustomToolCallOutput ResponseItemType = "custom_tool_call_output"
-	ResponseItemTypeWebSearchCall        ResponseItemType = "web_search_call"
-	ResponseItemTypeGhostSnapshot        ResponseItemType = "ghost_snapshot"
-	ResponseItemTypeCompactionSummary    ResponseItemType = "compaction_summary"
-	ResponseItemTypeOther                ResponseItemType = "other"
+	ResponseItemTypeMessage            ResponseItemType = "message"
+	ResponseItemTypeReasoning          ResponseItemType = "reasoning"
+	ResponseItemTypeLocalShellCall     ResponseItemType = "local_shell_call"
+	ResponseItemTypeFunctionCall       ResponseItemType = "function_call"
+	ResponseItemTypeFunctionCallOutput ResponseItemType = "function_call_output"
+	ResponseItemTypeWebSearchCall      ResponseItemType = "web_search_call"
+	ResponseItemTypeGhostSnapshot      ResponseItemType = "ghost_snapshot"
+	ResponseItemTypeCompactionSummary  ResponseItemType = "compaction_summary"
+	ResponseItemTypeOther              ResponseItemType = "other"
 )
 
 // ResponseInputItemType mirrors the inputs codex expects to feed back into the model.
 type ResponseInputItemType string
 
 const (
-	ResponseInputTypeMessage              ResponseInputItemType = "message"
-	ResponseInputTypeFunctionCallOutput   ResponseInputItemType = "function_call_output"
-	ResponseInputTypeCustomToolCallOutput ResponseInputItemType = "custom_tool_call_output"
+	ResponseInputTypeMessage            ResponseInputItemType = "message"
+	ResponseInputTypeFunctionCallOutput ResponseInputItemType = "function_call_output"
 )
 
 // ContentItemType enumerates message content kinds.
@@ -49,24 +46,21 @@ const (
 type ResponseItem struct {
 	Type ResponseItemType `json:"type"`
 
-	Message              *MessageResponseItem              `json:"-"`
-	Reasoning            *ReasoningResponseItem            `json:"-"`
-	LocalShellCall       *LocalShellCallResponseItem       `json:"-"`
-	FunctionCall         *FunctionCallResponseItem         `json:"-"`
-	FunctionCallOutput   *FunctionCallOutputResponseItem   `json:"-"`
-	CustomToolCall       *CustomToolCallResponseItem       `json:"-"`
-	CustomToolCallOutput *CustomToolCallOutputResponseItem `json:"-"`
-	WebSearchCall        *WebSearchCallResponseItem        `json:"-"`
-	GhostSnapshot        *GhostSnapshotResponseItem        `json:"-"`
-	CompactionSummary    *CompactionSummaryResponseItem    `json:"-"`
+	Message            *MessageResponseItem            `json:"-"`
+	Reasoning          *ReasoningResponseItem          `json:"-"`
+	LocalShellCall     *LocalShellCallResponseItem     `json:"-"`
+	FunctionCall       *FunctionCallResponseItem       `json:"-"`
+	FunctionCallOutput *FunctionCallOutputResponseItem `json:"-"`
+	WebSearchCall      *WebSearchCallResponseItem      `json:"-"`
+	GhostSnapshot      *GhostSnapshotResponseItem      `json:"-"`
+	CompactionSummary  *CompactionSummaryResponseItem  `json:"-"`
 }
 
 // ResponseInputItem captures tool outputs or user messages sent back to the model.
 type ResponseInputItem struct {
-	Type                 ResponseInputItemType
-	Message              *MessageResponseItem
-	FunctionCallOutput   *FunctionCallOutputInput
-	CustomToolCallOutput *CustomToolCallOutputInput
+	Type               ResponseInputItemType
+	Message            *MessageResponseItem
+	FunctionCallOutput *FunctionCallOutputInput
 }
 
 // ContentItem mirrors the Rust variant with a tagged "type" field.
@@ -111,21 +105,6 @@ type FunctionCallResponseItem struct {
 type FunctionCallOutputResponseItem struct {
 	CallID string                    `json:"call_id"`
 	Output FunctionCallOutputPayload `json:"output"`
-}
-
-// CustomToolCallResponseItem mirrors custom tool invocation.
-type CustomToolCallResponseItem struct {
-	ID     string `json:"id,omitempty"`
-	Status string `json:"status,omitempty"`
-	CallID string `json:"call_id"`
-	Name   string `json:"name"`
-	Input  string `json:"input"`
-}
-
-// CustomToolCallOutputResponseItem records custom tool output.
-type CustomToolCallOutputResponseItem struct {
-	CallID string `json:"call_id"`
-	Output string `json:"output"`
 }
 
 // WebSearchAction captures the search action payload.
@@ -190,12 +169,6 @@ type FunctionCallOutputInput struct {
 	Output FunctionCallOutputPayload `json:"output"`
 }
 
-// CustomToolCallOutputInput wraps custom tool output content.
-type CustomToolCallOutputInput struct {
-	CallID string `json:"call_id"`
-	Output string `json:"output"`
-}
-
 // FunctionCallOutputContentItem mirrors the Responses API.
 type FunctionCallOutputContentItem struct {
 	Type     ContentItemType `json:"type"`
@@ -235,16 +208,6 @@ func (r ResponseInputItem) ToResponseItem() ResponseItem {
 				FunctionCallOutput: &FunctionCallOutputResponseItem{
 					CallID: r.FunctionCallOutput.CallID,
 					Output: r.FunctionCallOutput.Output,
-				},
-			}
-		}
-	case ResponseInputTypeCustomToolCallOutput:
-		if r.CustomToolCallOutput != nil {
-			return ResponseItem{
-				Type: ResponseItemTypeCustomToolCallOutput,
-				CustomToolCallOutput: &CustomToolCallOutputResponseItem{
-					CallID: r.CustomToolCallOutput.CallID,
-					Output: r.CustomToolCallOutput.Output,
 				},
 			}
 		}
@@ -365,40 +328,6 @@ func (r ResponseItem) MarshalJSON() ([]byte, error) {
 			Output: r.FunctionCallOutput.Output,
 		}
 		return json.Marshal(payload)
-	case ResponseItemTypeCustomToolCall:
-		if r.CustomToolCall == nil {
-			break
-		}
-		payload := struct {
-			Type   ResponseItemType `json:"type"`
-			ID     string           `json:"id,omitempty"`
-			Status string           `json:"status,omitempty"`
-			CallID string           `json:"call_id"`
-			Name   string           `json:"name"`
-			Input  string           `json:"input"`
-		}{
-			Type:   r.Type,
-			ID:     r.CustomToolCall.ID,
-			Status: r.CustomToolCall.Status,
-			CallID: r.CustomToolCall.CallID,
-			Name:   r.CustomToolCall.Name,
-			Input:  r.CustomToolCall.Input,
-		}
-		return json.Marshal(payload)
-	case ResponseItemTypeCustomToolCallOutput:
-		if r.CustomToolCallOutput == nil {
-			break
-		}
-		payload := struct {
-			Type   ResponseItemType `json:"type"`
-			CallID string           `json:"call_id"`
-			Output string           `json:"output"`
-		}{
-			Type:   r.Type,
-			CallID: r.CustomToolCallOutput.CallID,
-			Output: r.CustomToolCallOutput.Output,
-		}
-		return json.Marshal(payload)
 	case ResponseItemTypeWebSearchCall:
 		if r.WebSearchCall == nil {
 			break
@@ -513,35 +442,6 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		r.FunctionCallOutput = &FunctionCallOutputResponseItem{CallID: payload.CallID, Output: payload.Output}
-	case ResponseItemTypeCustomToolCall:
-		var payload struct {
-			Type   ResponseItemType `json:"type"`
-			ID     string           `json:"id,omitempty"`
-			Status string           `json:"status,omitempty"`
-			CallID string           `json:"call_id"`
-			Name   string           `json:"name"`
-			Input  string           `json:"input"`
-		}
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return err
-		}
-		r.CustomToolCall = &CustomToolCallResponseItem{
-			ID:     payload.ID,
-			Status: payload.Status,
-			CallID: payload.CallID,
-			Name:   payload.Name,
-			Input:  payload.Input,
-		}
-	case ResponseItemTypeCustomToolCallOutput:
-		var payload struct {
-			Type   ResponseItemType `json:"type"`
-			CallID string           `json:"call_id"`
-			Output string           `json:"output"`
-		}
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return err
-		}
-		r.CustomToolCallOutput = &CustomToolCallOutputResponseItem{CallID: payload.CallID, Output: payload.Output}
 	case ResponseItemTypeWebSearchCall:
 		var payload struct {
 			Type   ResponseItemType `json:"type"`
@@ -600,24 +500,6 @@ func ResponseInputFromToolResult(result tools.ToolResult) ResponseInputItem {
 			Output: payload,
 		},
 	}
-}
-
-// responseItemsFromMarkers records tool call intent for history/debugging.
-func responseItemsFromMarkers(markers []tools.ToolCallMarker) []ProcessedResponseItem {
-	items := make([]ProcessedResponseItem, 0, len(markers))
-	for _, marker := range markers {
-		items = append(items, ProcessedResponseItem{
-			Item: ResponseItem{
-				Type: ResponseItemTypeCustomToolCall,
-				CustomToolCall: &CustomToolCallResponseItem{
-					CallID: marker.ID,
-					Name:   marker.Tool,
-					Input:  fmt.Sprintf(`{"tool":"%s","id":"%s","args":%s}`, marker.Tool, marker.ID, strings.TrimSpace(string(marker.Args))),
-				},
-			},
-		})
-	}
-	return items
 }
 
 // processedFromToolResults pairs tool outputs with their ResponseInputItem.
@@ -680,21 +562,38 @@ func responseItemToAgentMessages(item ResponseItem) []agent.Message {
 			return nil
 		}
 		return []agent.Message{{Role: agent.Role(item.Message.Role), Content: flattenContentItems(item.Message.Content)}}
+	case ResponseItemTypeFunctionCall:
+		if item.FunctionCall == nil {
+			return nil
+		}
+		args := normalizeRawJSON(item.FunctionCall.Arguments)
+		content := fmt.Sprintf("[tool_use] %s (%s)", item.FunctionCall.Name, item.FunctionCall.CallID)
+		return []agent.Message{{
+			Role:    agent.RoleAssistant,
+			Content: content,
+			ToolUse: &agent.ToolUse{
+				ID:    item.FunctionCall.CallID,
+				Name:  item.FunctionCall.Name,
+				Input: args,
+			},
+		}}
 	case ResponseItemTypeFunctionCallOutput:
 		if item.FunctionCallOutput == nil {
 			return nil
 		}
-		return []agent.Message{{
-			Role:    agent.RoleUser,
-			Content: strings.TrimSpace(item.FunctionCallOutput.Output.Content),
-		}}
-	case ResponseItemTypeCustomToolCallOutput:
-		if item.CustomToolCallOutput == nil {
-			return nil
+		content := strings.TrimSpace(item.FunctionCallOutput.Output.Content)
+		isError := false
+		if item.FunctionCallOutput.Output.Success != nil {
+			isError = !*item.FunctionCallOutput.Output.Success
 		}
 		return []agent.Message{{
 			Role:    agent.RoleUser,
-			Content: strings.TrimSpace(item.CustomToolCallOutput.Output),
+			Content: content,
+			ToolResult: &agent.ToolResult{
+				ToolUseID: item.FunctionCallOutput.CallID,
+				Content:   content,
+				IsError:   isError,
+			},
 		}}
 	case ResponseItemTypeReasoning:
 		if item.Reasoning == nil {
@@ -707,17 +606,6 @@ func responseItemToAgentMessages(item ResponseItem) []agent.Message {
 		return []agent.Message{{
 			Role:    agent.RoleAssistant,
 			Content: text,
-		}}
-	case ResponseItemTypeCustomToolCall:
-		if item.CustomToolCall == nil {
-			return nil
-		}
-		if strings.TrimSpace(item.CustomToolCall.Input) == "" {
-			return nil
-		}
-		return []agent.Message{{
-			Role:    agent.RoleAssistant,
-			Content: item.CustomToolCall.Input,
 		}}
 	default:
 		return nil

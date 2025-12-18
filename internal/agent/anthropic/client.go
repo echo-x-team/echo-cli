@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"echo-cli/internal/agent"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 )
 
 type Options struct {
@@ -111,17 +113,25 @@ func buildMessageParams(prompt agent.Prompt, model anthropic.Model) anthropic.Me
 	var messages []anthropic.MessageParam
 
 	for _, msg := range prompt.Messages {
-		text := strings.TrimSpace(msg.Content)
-		if text == "" {
-			continue
-		}
 		switch msg.Role {
 		case agent.RoleSystem:
+			text := strings.TrimSpace(msg.Content)
+			if text == "" {
+				continue
+			}
 			system = append(system, anthropic.TextBlockParam{Text: text})
 		case agent.RoleAssistant:
-			messages = append(messages, anthropic.NewAssistantMessage(anthropic.NewTextBlock(text)))
+			blocks := messageBlocks(msg)
+			if len(blocks) == 0 {
+				continue
+			}
+			messages = append(messages, anthropic.NewAssistantMessage(blocks...))
 		default:
-			messages = append(messages, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
+			blocks := messageBlocks(msg)
+			if len(blocks) == 0 {
+				continue
+			}
+			messages = append(messages, anthropic.NewUserMessage(blocks...))
 		}
 	}
 
@@ -129,11 +139,102 @@ func buildMessageParams(prompt agent.Prompt, model anthropic.Model) anthropic.Me
 		Model:     model,
 		MaxTokens: 1024,
 		Messages:  messages,
+		Tools:     toolSpecsToParams(prompt.Tools),
 	}
 	if len(system) > 0 {
 		params.System = system
 	}
 	return params
+}
+
+func messageBlocks(msg agent.Message) []anthropic.ContentBlockParamUnion {
+	if msg.ToolResult != nil && msg.ToolResult.ToolUseID != "" {
+		return []anthropic.ContentBlockParamUnion{
+			anthropic.NewToolResultBlock(
+				msg.ToolResult.ToolUseID,
+				msg.ToolResult.Content,
+				msg.ToolResult.IsError,
+			),
+		}
+	}
+	if msg.ToolUse != nil && msg.ToolUse.ID != "" && msg.ToolUse.Name != "" {
+		return []anthropic.ContentBlockParamUnion{
+			anthropic.NewToolUseBlock(msg.ToolUse.ID, msg.ToolUse.Input, msg.ToolUse.Name),
+		}
+	}
+	text := strings.TrimSpace(msg.Content)
+	if text == "" {
+		return nil
+	}
+	return []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(text)}
+}
+
+func toolSpecsToParams(specs []agent.ToolSpec) []anthropic.ToolUnionParam {
+	out := make([]anthropic.ToolUnionParam, 0, len(specs))
+	for _, spec := range specs {
+		param, err := toolSpecToToolParam(spec)
+		if err != nil {
+			continue
+		}
+		out = append(out, anthropic.ToolUnionParam{OfTool: &param})
+	}
+	return out
+}
+
+func toolSpecToToolParam(spec agent.ToolSpec) (anthropic.ToolParam, error) {
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
+		return anthropic.ToolParam{}, errors.New("missing tool name")
+	}
+	props := spec.Parameters["properties"]
+	rawRequired := spec.Parameters["required"]
+	required, err := schemaStrings(rawRequired)
+	if err != nil {
+		return anthropic.ToolParam{}, fmt.Errorf("tool %q schema.required: %w", name, err)
+	}
+
+	schema := anthropic.ToolInputSchemaParam{
+		Type:       constant.Object("object"),
+		Properties: props,
+		Required:   required,
+	}
+	if additional, ok := spec.Parameters["additionalProperties"]; ok {
+		if schema.ExtraFields == nil {
+			schema.ExtraFields = map[string]any{}
+		}
+		schema.ExtraFields["additionalProperties"] = additional
+	}
+
+	tool := anthropic.ToolParam{
+		Name:        name,
+		InputSchema: schema,
+		Type:        anthropic.ToolTypeCustom,
+	}
+	if desc := strings.TrimSpace(spec.Description); desc != "" {
+		tool.Description = anthropic.String(desc)
+	}
+	return tool, nil
+}
+
+func schemaStrings(value any) ([]string, error) {
+	switch v := value.(type) {
+	case nil:
+		return nil, nil
+	case []string:
+		return v, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("item[%d] type %T", i, item)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unexpected type %T", value)
+	}
 }
 
 func extractText(blocks []anthropic.ContentBlockUnion) string {

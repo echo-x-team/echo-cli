@@ -179,7 +179,7 @@ type turnResult struct {
 
 type modelTurnOutput struct {
 	fullResponse string
-	markers      []tools.ToolCallMarker
+	toolCalls    []tools.ToolCall
 	items        []ResponseItem
 }
 
@@ -212,11 +212,11 @@ func (e *Engine) logRunTaskError(submission events.Submission, stage string, err
 	errorLog.WithError(err).WithFields(fields).Error(msg)
 }
 
-func collectMarkerIDs(markers []tools.ToolCallMarker) []string {
-	ids := make([]string, 0, len(markers))
-	for _, marker := range markers {
-		if marker.ID != "" {
-			ids = append(ids, marker.ID)
+func collectToolCallIDs(calls []tools.ToolCall) []string {
+	ids := make([]string, 0, len(calls))
+	for _, call := range calls {
+		if call.ID != "" {
+			ids = append(ids, call.ID)
 		}
 	}
 	return ids
@@ -262,7 +262,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	turnCtx := state.Context
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
 	defer stopTools()
-	publishedMarkers := map[string]struct{}{}
+	publishedCalls := map[string]struct{}{}
 
 	exitReason := "unknown"
 	exitStage := "unknown"
@@ -302,7 +302,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			return err
 		}
 
-		turn, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedMarkers)
+		turn, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedCalls)
 		if err != nil {
 			exitErr = err
 			exitStage = "run_turn"
@@ -344,7 +344,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 }
 
 // runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
-func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedMarkers map[string]struct{}) (turnResult, error) {
+func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, error) {
 	prompt := turnCtx.BuildPrompt()
 	logPrompt(submission, prompt)
 
@@ -354,15 +354,15 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 	}
 
 	processed := e.identifyTools(output)
-	e.routeTools(submission, output.markers, publishedMarkers)
+	e.routeTools(ctx, submission, output.toolCalls, publishedCalls)
 
-	results, err := e.executeTools(ctx, output.markers, toolEvents)
+	results, err := e.executeTools(ctx, output.toolCalls, toolEvents)
 	if err != nil {
 		e.logRunTaskError(submission, "tool_execution", err, logger.Fields{
 			"model":      turnCtx.Model,
 			"sequence":   *seq,
-			"tool_ids":   collectMarkerIDs(output.markers),
-			"tool_count": len(output.markers),
+			"tool_ids":   collectToolCallIDs(output.toolCalls),
+			"tool_count": len(output.toolCalls),
 		})
 		return turnResult{}, err
 	}
@@ -466,35 +466,33 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 	return output, nil
 }
 
-// identifyTools 负责从模型输出中识别工具标记并构造历史记录项（「工具识别」层）。
+// identifyTools 负责从模型输出中识别工具调用并构造历史记录项（「工具识别」层）。
 func (e *Engine) identifyTools(output modelTurnOutput) []ProcessedResponseItem {
-	processed := make([]ProcessedResponseItem, 0, len(output.items)+1+len(output.markers))
-	toolIDs := collectToolCallIDs(output.items)
+	processed := make([]ProcessedResponseItem, 0, len(output.items)+1)
 	processed = append(processed, processedFromResponseItems(output.items)...)
-	if strings.TrimSpace(output.fullResponse) != "" && len(output.markers) == 0 && len(output.items) == 0 {
-		processed = append(processed, ProcessedResponseItem{
-			Item: NewAssistantMessageItem(output.fullResponse),
-		})
-	}
-	for _, item := range responseItemsFromMarkers(output.markers) {
-		if call := item.Item.CustomToolCall; call != nil {
-			if _, ok := toolIDs[call.CallID]; ok {
-				continue
-			}
-		}
-		processed = append(processed, item)
+	if strings.TrimSpace(output.fullResponse) != "" && !hasAssistantMessageItem(output.items) {
+		processed = append(processed, ProcessedResponseItem{Item: NewAssistantMessageItem(output.fullResponse)})
 	}
 	return processed
 }
 
-// routeTools 发布工具调用标记到总线（「工具路由」层）。
-func (e *Engine) routeTools(submission events.Submission, markers []tools.ToolCallMarker, publishedMarkers map[string]struct{}) {
-	e.dispatchToolMarkers(submission, markers, publishedMarkers)
+func hasAssistantMessageItem(items []ResponseItem) bool {
+	for _, item := range items {
+		if item.Type == ResponseItemTypeMessage && item.Message != nil && item.Message.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// routeTools 将模型工具调用转换为 ToolCall 并投递到总线（「工具路由」层）。
+func (e *Engine) routeTools(ctx context.Context, submission events.Submission, calls []tools.ToolCall, publishedCalls map[string]struct{}) {
+	e.dispatchToolCalls(ctx, submission, calls, publishedCalls)
 }
 
 // executeTools 等待工具执行结果并返回（「工具执行」层）。
-func (e *Engine) executeTools(ctx context.Context, markers []tools.ToolCallMarker, toolEvents <-chan tools.ToolEvent) ([]tools.ToolResult, error) {
-	return e.collectToolResults(ctx, markers, toolEvents)
+func (e *Engine) executeTools(ctx context.Context, calls []tools.ToolCall, toolEvents <-chan tools.ToolEvent) ([]tools.ToolResult, error) {
+	return e.collectToolResults(ctx, calls, toolEvents)
 }
 
 func deriveFinalContent(fallback string, items []ResponseItem) string {
@@ -532,21 +530,20 @@ func logPrompt(submission events.Submission, prompt Prompt) {
 }
 
 type modelStreamCollector struct {
-	builder     strings.Builder
-	markers     []tools.ToolCallMarker
-	items       []ResponseItem
-	seenMarkers map[string]struct{}
+	builder   strings.Builder
+	toolCalls []tools.ToolCall
+	items     []ResponseItem
+	seenCalls map[string]struct{}
 }
 
 func newModelStreamCollector() *modelStreamCollector {
 	return &modelStreamCollector{
-		seenMarkers: make(map[string]struct{}),
+		seenCalls: make(map[string]struct{}),
 	}
 }
 
 func (c *modelStreamCollector) OnTextDelta(chunk string) {
 	c.builder.WriteString(chunk)
-	c.captureMarkersFromText()
 }
 
 func (c *modelStreamCollector) OnItem(raw json.RawMessage) {
@@ -559,64 +556,43 @@ func (c *modelStreamCollector) OnItem(raw json.RawMessage) {
 		return
 	}
 	c.items = append(c.items, item)
-	c.addMarkers(markersFromResponseItem(item))
-	if text := textFromResponseItem(item); text != "" {
+	c.addToolCall(toolCallFromResponseItem(item))
+	if text := textFromResponseItem(item); strings.TrimSpace(text) != "" {
 		c.builder.WriteString(text)
-		c.captureMarkersFromText()
 	}
 }
 
 func (c *modelStreamCollector) Result() modelTurnOutput {
 	return modelTurnOutput{
 		fullResponse: c.builder.String(),
-		markers:      c.markers,
+		toolCalls:    c.toolCalls,
 		items:        c.items,
 	}
 }
 
-func (c *modelStreamCollector) captureMarkersFromText() {
-	all, _ := tools.ParseMarkers(c.builder.String())
-	c.addMarkers(all)
+func (c *modelStreamCollector) addToolCall(call tools.ToolCall, ok bool) {
+	if !ok || call.Name == "" || call.ID == "" {
+		return
+	}
+	if _, seen := c.seenCalls[call.ID]; seen {
+		return
+	}
+	c.seenCalls[call.ID] = struct{}{}
+	c.toolCalls = append(c.toolCalls, call)
 }
 
-func (c *modelStreamCollector) addMarkers(markers []tools.ToolCallMarker) {
-	for _, marker := range markers {
-		if marker.Tool == "" || marker.ID == "" {
-			continue
-		}
-		if _, ok := c.seenMarkers[marker.ID]; ok {
-			continue
-		}
-		c.seenMarkers[marker.ID] = struct{}{}
-		c.markers = append(c.markers, marker)
+func toolCallFromResponseItem(item ResponseItem) (tools.ToolCall, bool) {
+	if item.Type != ResponseItemTypeFunctionCall || item.FunctionCall == nil {
+		return tools.ToolCall{}, false
 	}
-}
-
-func markersFromResponseItem(item ResponseItem) []tools.ToolCallMarker {
-	switch item.Type {
-	case ResponseItemTypeFunctionCall:
-		if item.FunctionCall == nil || item.FunctionCall.Name == "" || item.FunctionCall.CallID == "" {
-			return nil
-		}
-		args := normalizeRawJSON(item.FunctionCall.Arguments)
-		return []tools.ToolCallMarker{{
-			Tool: item.FunctionCall.Name,
-			ID:   item.FunctionCall.CallID,
-			Args: args,
-		}}
-	case ResponseItemTypeCustomToolCall:
-		if item.CustomToolCall == nil || item.CustomToolCall.Name == "" || item.CustomToolCall.CallID == "" {
-			return nil
-		}
-		args := normalizeRawJSON(item.CustomToolCall.Input)
-		return []tools.ToolCallMarker{{
-			Tool: item.CustomToolCall.Name,
-			ID:   item.CustomToolCall.CallID,
-			Args: args,
-		}}
-	default:
-		return nil
+	if item.FunctionCall.Name == "" || item.FunctionCall.CallID == "" {
+		return tools.ToolCall{}, false
 	}
+	return tools.ToolCall{
+		ID:      item.FunctionCall.CallID,
+		Name:    item.FunctionCall.Name,
+		Payload: normalizeRawJSON(item.FunctionCall.Arguments),
+	}, true
 }
 
 func textFromResponseItem(item ResponseItem) string {
@@ -634,27 +610,6 @@ func textFromResponseItem(item ResponseItem) string {
 	default:
 		return ""
 	}
-}
-
-func collectToolCallIDs(items []ResponseItem) map[string]struct{} {
-	ids := make(map[string]struct{})
-	for _, item := range items {
-		switch item.Type {
-		case ResponseItemTypeFunctionCall:
-			if item.FunctionCall != nil && item.FunctionCall.CallID != "" {
-				ids[item.FunctionCall.CallID] = struct{}{}
-			}
-		case ResponseItemTypeCustomToolCall:
-			if item.CustomToolCall != nil && item.CustomToolCall.CallID != "" {
-				ids[item.CustomToolCall.CallID] = struct{}{}
-			}
-		case ResponseItemTypeLocalShellCall:
-			if item.LocalShellCall != nil && item.LocalShellCall.CallID != "" {
-				ids[item.LocalShellCall.CallID] = struct{}{}
-			}
-		}
-	}
-	return ids
 }
 
 func normalizeRawJSON(text string) json.RawMessage {
@@ -881,18 +836,18 @@ func (e *Engine) subscribeToolEvents(ctx context.Context) (<-chan tools.ToolEven
 	return out, func() { close(stop) }
 }
 
-func (e *Engine) collectToolResults(ctx context.Context, markers []tools.ToolCallMarker, events <-chan tools.ToolEvent) ([]tools.ToolResult, error) {
-	if len(markers) == 0 {
+func (e *Engine) collectToolResults(ctx context.Context, calls []tools.ToolCall, events <-chan tools.ToolEvent) ([]tools.ToolResult, error) {
+	if len(calls) == 0 {
 		return nil, nil
 	}
 	if events == nil {
 		return nil, errors.New("tool event stream not configured")
 	}
-	pending := make(map[string]tools.ToolCallMarker, len(markers))
-	order := make([]string, 0, len(markers))
-	for _, marker := range markers {
-		pending[marker.ID] = marker
-		order = append(order, marker.ID)
+	pending := make(map[string]tools.ToolCall, len(calls))
+	order := make([]string, 0, len(calls))
+	for _, call := range calls {
+		pending[call.ID] = call
+		order = append(order, call.ID)
 	}
 
 	waitCtx := ctx
@@ -940,22 +895,22 @@ func (e *Engine) collectToolResults(ctx context.Context, markers []tools.ToolCal
 	return ordered, nil
 }
 
-func (e *Engine) dispatchToolMarkers(submission events.Submission, markers []tools.ToolCallMarker, seen map[string]struct{}) {
-	if e.bus == nil || len(markers) == 0 {
+func (e *Engine) dispatchToolCalls(ctx context.Context, submission events.Submission, calls []tools.ToolCall, seen map[string]struct{}) {
+	if e.bus == nil || len(calls) == 0 {
 		return
 	}
-	for _, marker := range markers {
-		if marker.Tool == "" || marker.ID == "" {
+	for _, call := range calls {
+		if call.Name == "" || call.ID == "" {
 			continue
 		}
 		if seen != nil {
-			if _, ok := seen[marker.ID]; ok {
+			if _, ok := seen[call.ID]; ok {
 				continue
 			}
-			seen[marker.ID] = struct{}{}
+			seen[call.ID] = struct{}{}
 		}
-		e.registerToolCallContext(submission, marker.ID)
-		e.bus.Publish(marker)
+		e.registerToolCallContext(submission, call.ID)
+		e.bus.Publish(tools.DispatchRequest{Ctx: ctx, Call: call})
 	}
 }
 

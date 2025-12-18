@@ -36,17 +36,21 @@ func (d *Dispatcher) Start(ctx context.Context) {
 				if !ok {
 					return
 				}
-				marker, ok := evt.(tools.ToolCallMarker)
-				if !ok {
+				switch v := evt.(type) {
+				case tools.DispatchRequest:
+					callCtx := v.Ctx
+					if callCtx == nil {
+						callCtx = ctx
+					}
+					if v.Call.Name == "" || v.Call.ID == "" {
+						continue
+					}
+					go d.runtime.Dispatch(callCtx, v.Call, func(ev tools.ToolEvent) {
+						d.bus.Publish(ev)
+					})
+				default:
 					continue
 				}
-				call, err := tools.BuildCallFromMarker(marker)
-				if err != nil {
-					continue
-				}
-				go d.runtime.Dispatch(ctx, call, func(ev tools.ToolEvent) {
-					d.bus.Publish(ev)
-				})
 			}
 		}
 	}()

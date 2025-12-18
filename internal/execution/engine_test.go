@@ -179,14 +179,14 @@ func TestEngineLoopsToolsAndPersistsHistory(t *testing.T) {
 	go func() {
 		sub := bus.Subscribe()
 		for evt := range sub {
-			marker, ok := evt.(tools.ToolCallMarker)
-			if !ok || marker.ID != "call-1" {
+			req, ok := evt.(tools.DispatchRequest)
+			if !ok || req.Call.ID != "call-1" {
 				continue
 			}
 			bus.Publish(tools.ToolEvent{
 				Type: "item.completed",
 				Result: tools.ToolResult{
-					ID:     marker.ID,
+					ID:     req.Call.ID,
 					Kind:   tools.ToolCommand,
 					Status: "completed",
 					Output: "tool output",
@@ -248,7 +248,7 @@ done:
 	if len(history) != 4 {
 		t.Fatalf("expected history with tool loop messages, got %d entries", len(history))
 	}
-	if history[1].Role != agent.RoleAssistant || !strings.Contains(history[1].Content, `"tool":"command"`) {
+	if history[1].Role != agent.RoleAssistant || !strings.Contains(history[1].Content, "[tool_use] command") {
 		t.Fatalf("expected assistant tool call recorded, got %+v", history[1])
 	}
 	if history[2].Role != agent.RoleUser || !strings.Contains(history[2].Content, "tool output") {
@@ -281,14 +281,14 @@ func TestEngineEmitsPlanUpdatedEventOnUpdatePlanToolSuccess(t *testing.T) {
 	go func() {
 		sub := bus.Subscribe()
 		for evt := range sub {
-			marker, ok := evt.(tools.ToolCallMarker)
-			if !ok || marker.ID != "plan-1" {
+			req, ok := evt.(tools.DispatchRequest)
+			if !ok || req.Call.ID != "plan-1" {
 				continue
 			}
 			bus.Publish(tools.ToolEvent{
 				Type: "item.completed",
 				Result: tools.ToolResult{
-					ID:          marker.ID,
+					ID:          req.Call.ID,
 					Kind:        tools.ToolPlanUpdate,
 					Status:      "completed",
 					Explanation: "because",
@@ -336,94 +336,6 @@ done:
 	}
 }
 
-func TestEngineDispatchesMarkersAfterFullResponse(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	bus := events.NewBus()
-	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 2})
-	client := &splitToolLoopModelClient{}
-	engine := NewEngine(Options{
-		Manager:     manager,
-		Client:      client,
-		Bus:         bus,
-		Defaults:    SessionDefaults{Model: "gpt-test", System: "system"},
-		ToolTimeout: time.Second,
-	})
-
-	engine.Start(ctx)
-	defer engine.Close()
-
-	// Simulate dispatcher sending tool results after receiving the marker.
-	go func() {
-		sub := bus.Subscribe()
-		for evt := range sub {
-			marker, ok := evt.(tools.ToolCallMarker)
-			if !ok || marker.ID != "split-1" {
-				continue
-			}
-			bus.Publish(tools.ToolEvent{
-				Type: "item.completed",
-				Result: tools.ToolResult{
-					ID:     marker.ID,
-					Kind:   tools.ToolCommand,
-					Status: "completed",
-					Output: "tool output",
-				},
-			})
-			return
-		}
-	}()
-
-	eventsCh := engine.Events()
-	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-split"})
-	if err != nil {
-		t.Fatalf("submit user input: %v", err)
-	}
-
-	var outputs []events.AgentOutput
-	var taskResult events.TaskResult
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for tool loop completion, collected %d outputs", len(outputs))
-		case ev := <-eventsCh:
-			if ev.SubmissionID != subID {
-				continue
-			}
-			switch ev.Type {
-			case events.EventAgentOutput:
-				output, ok := ev.Payload.(events.AgentOutput)
-				if !ok {
-					t.Fatalf("unexpected payload type %#v", ev.Payload)
-				}
-				outputs = append(outputs, output)
-			case events.EventError:
-				t.Fatalf("unexpected error payload: %v", ev.Payload)
-			case events.EventTaskCompleted:
-				if res, ok := ev.Payload.(events.TaskResult); ok {
-					taskResult = res
-				}
-				goto done
-			}
-		}
-	}
-
-done:
-	if taskResult.Status != "completed" {
-		t.Fatalf("expected completed task, got %+v", taskResult)
-	}
-	if client.calls < 2 {
-		t.Fatalf("expected multiple model calls with tools, got %d", client.calls)
-	}
-	if len(outputs) == 0 || !outputs[len(outputs)-1].Final {
-		t.Fatalf("expected final agent output, got %+v", outputs)
-	}
-	if outputs[len(outputs)-1].Content != "final after split tool" {
-		t.Fatalf("unexpected final content: %q", outputs[len(outputs)-1].Content)
-	}
-}
-
 func TestEngineHandlesResponseItemsFromStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -445,14 +357,14 @@ func TestEngineHandlesResponseItemsFromStream(t *testing.T) {
 	go func() {
 		sub := bus.Subscribe()
 		for evt := range sub {
-			marker, ok := evt.(tools.ToolCallMarker)
-			if !ok || marker.ID != "call-item-1" {
+			req, ok := evt.(tools.DispatchRequest)
+			if !ok || req.Call.ID != "call-item-1" {
 				continue
 			}
 			bus.Publish(tools.ToolEvent{
 				Type: "item.completed",
 				Result: tools.ToolResult{
-					ID:     marker.ID,
+					ID:     req.Call.ID,
 					Kind:   tools.ToolCommand,
 					Status: "completed",
 					Output: "tool output from item",
@@ -532,14 +444,14 @@ func TestEngineAddsLanguageDirectiveEveryModelCall(t *testing.T) {
 	go func() {
 		sub := bus.Subscribe()
 		for evt := range sub {
-			marker, ok := evt.(tools.ToolCallMarker)
-			if !ok || marker.ID != "lang-1" {
+			req, ok := evt.(tools.DispatchRequest)
+			if !ok || req.Call.ID != "lang-1" {
 				continue
 			}
 			bus.Publish(tools.ToolEvent{
 				Type: "item.completed",
 				Result: tools.ToolResult{
-					ID:     marker.ID,
+					ID:     req.Call.ID,
 					Kind:   tools.ToolCommand,
 					Status: "completed",
 					Output: "done",
@@ -655,7 +567,16 @@ func (c *toolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEven
 	default:
 	}
 	if c.calls == 1 {
-		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"command","id":"call-1","args":{"command":"echo hi"}}`})
+		item := ResponseItem{
+			Type: ResponseItemTypeFunctionCall,
+			FunctionCall: &FunctionCallResponseItem{
+				Name:      "command",
+				Arguments: `{"command":"echo hi"}`,
+				CallID:    "call-1",
+			},
+		}
+		raw, _ := json.Marshal(item)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
 		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return nil
 	}
@@ -680,44 +601,20 @@ func (c *planToolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, on
 	default:
 	}
 	if c.calls == 1 {
-		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"update_plan","id":"plan-1","args":{"explanation":"because","plan":[{"step":"do x","status":"pending"}]}}`})
+		item := ResponseItem{
+			Type: ResponseItemTypeFunctionCall,
+			FunctionCall: &FunctionCallResponseItem{
+				Name:      "update_plan",
+				Arguments: `{"explanation":"because","plan":[{"step":"do x","status":"pending"}]}`,
+				CallID:    "plan-1",
+			},
+		}
+		raw, _ := json.Marshal(item)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
 		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 		return nil
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final after plan"})
-	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
-	return nil
-}
-
-type splitToolLoopModelClient struct {
-	calls int
-}
-
-func (c *splitToolLoopModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
-	return "", nil
-}
-
-func (c *splitToolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent func(agent.StreamEvent)) error {
-	c.calls++
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	if c.calls == 1 {
-		chunks := []string{"```tool\n", `{"tool":"command","id":"split-1","args":{"command":"echo hi"}}`, "\n```"}
-		for _, ch := range chunks {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: ch})
-		}
-		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
-		return nil
-	}
-	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final after split tool"})
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
@@ -780,7 +677,16 @@ func (c *recordingLanguageModelClient) Stream(ctx context.Context, prompt agent.
 	}
 
 	if call == 1 {
-		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: `{"tool":"command","id":"lang-1","args":{"command":"echo hi"}}`})
+		item := ResponseItem{
+			Type: ResponseItemTypeFunctionCall,
+			FunctionCall: &FunctionCallResponseItem{
+				Name:      "command",
+				Arguments: `{"command":"echo hi"}`,
+				CallID:    "lang-1",
+			},
+		}
+		raw, _ := json.Marshal(item)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
 	} else {
 		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "final language check"})
 	}
