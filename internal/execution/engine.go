@@ -184,6 +184,10 @@ type modelTurnOutput struct {
 }
 
 const toolErrorOutputLimit = 400
+const toolPayloadPreviewLimit = 2000
+const toolDiffPreviewLimit = 2000
+const toolPatchHeadPreviewLimit = 2000
+const toolPatchTailPreviewLimit = 800
 
 func (e *Engine) logRunTaskError(submission events.Submission, stage string, err error, fields logger.Fields) {
 	if err == nil {
@@ -222,7 +226,19 @@ func collectToolCallIDs(calls []tools.ToolCall) []string {
 	return ids
 }
 
-func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnContext, seq int, result tools.ToolResult) {
+func findToolCall(calls []tools.ToolCall, id string) *tools.ToolCall {
+	if id == "" {
+		return nil
+	}
+	for i := range calls {
+		if calls[i].ID == id {
+			return &calls[i]
+		}
+	}
+	return nil
+}
+
+func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnContext, seq int, call *tools.ToolCall, result tools.ToolResult) {
 	reason := strings.TrimSpace(result.Error)
 	if reason == "" && result.ExitCode != 0 {
 		reason = fmt.Sprintf("non-zero exit code %d", result.ExitCode)
@@ -240,6 +256,30 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnCo
 		"sequence":    seq,
 		"model":       turnCtx.Model,
 	}
+	if call != nil {
+		fields["tool_call_name"] = call.Name
+		fields["tool_payload_len"] = len(call.Payload)
+		if payload := bytes.TrimSpace(call.Payload); len(payload) != 0 {
+			fields["tool_payload_preview"] = prettyPayloadBytesForLog(payload, toolPayloadPreviewLimit)
+		}
+		if result.Kind == tools.ToolApplyPatch {
+			var args struct {
+				Patch string `json:"patch"`
+				Path  string `json:"path"`
+			}
+			_ = json.Unmarshal(call.Payload, &args)
+			patch := strings.TrimSpace(args.Patch)
+			if patch != "" {
+				fields["tool_patch_len"] = len(patch)
+				fields["tool_patch_has_end_patch"] = strings.Contains(patch, "*** End Patch")
+				fields["tool_patch_head_preview"] = sanitizeLogText(previewForLog(patch, toolPatchHeadPreviewLimit))
+				fields["tool_patch_tail_preview"] = sanitizeLogText(tailPreviewForLog(patch, toolPatchTailPreviewLimit))
+			}
+			if p := strings.TrimSpace(args.Path); p != "" && result.Path == "" {
+				fields["tool_path"] = p
+			}
+		}
+	}
 	if result.Command != "" {
 		fields["tool_command"] = result.Command
 	}
@@ -248,6 +288,10 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnCo
 	}
 	if result.ExitCode != 0 {
 		fields["tool_exit_code"] = result.ExitCode
+	}
+	if diff := strings.TrimSpace(result.Diff); diff != "" {
+		fields["tool_diff_len"] = len(diff)
+		fields["tool_diff_preview"] = sanitizeLogText(previewForLog(diff, toolDiffPreviewLimit))
 	}
 	if out := strings.TrimSpace(result.Output); out != "" {
 		fields["tool_output_preview"] = sanitizeLogText(previewForLog(out, toolErrorOutputLimit))
@@ -384,9 +428,17 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 	}
 
 	processed := e.identifyTools(output)
-	e.routeTools(ctx, submission, output.toolCalls, publishedCalls)
 
-	results, err := e.executeTools(ctx, output.toolCalls, toolEvents)
+	toolCtx := ctx
+	toolCancel := func() {}
+	if e.toolTimeout > 0 {
+		toolCtx, toolCancel = context.WithTimeout(ctx, e.toolTimeout)
+	}
+	defer toolCancel()
+
+	e.routeTools(toolCtx, submission, output.toolCalls, publishedCalls)
+
+	results, err := e.executeTools(toolCtx, output.toolCalls, toolEvents)
 	if err != nil {
 		e.logRunTaskError(submission, "tool_execution", err, logger.Fields{
 			"model":      turnCtx.Model,
@@ -397,7 +449,8 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 		return turnResult{}, nil, stageError{Stage: "tool_execution", Err: err}
 	}
 	for _, res := range results {
-		e.logToolResultError(submission, turnCtx, *seq, res)
+		call := findToolCall(output.toolCalls, res.ID)
+		e.logToolResultError(submission, turnCtx, *seq, call, res)
 	}
 	e.publishPlanUpdates(ctx, submission, results, emit)
 	processed = append(processed, processedFromToolResults(results)...)
@@ -753,6 +806,16 @@ func previewForLog(text string, limit int) string {
 	return text[:limit-3] + "..."
 }
 
+func tailPreviewForLog(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	if limit < 3 {
+		return text[len(text)-limit:]
+	}
+	return "..." + text[len(text)-(limit-3):]
+}
+
 func (e *Engine) startToolForwarder(ctx context.Context) {
 	if e.bus == nil {
 		return
@@ -778,6 +841,9 @@ func (e *Engine) startToolForwarder(ctx context.Context) {
 				meta := map[string]string{"tool_kind": string(toolEvt.Result.Kind)}
 				// Best-effort: attach submission/session so EQ consumers can group tool events.
 				subID, sessID, subMeta := e.lookupToolCallContext(toolEvt.Result.ID)
+				if toolEvt.Type == "item.completed" {
+					e.clearToolCallContext(toolEvt.Result.ID)
+				}
 				if sessID == "" {
 					// If we can't associate to a session, still publish a tool.event for auditing,
 					// but session-scoped renderers will typically ignore it.
@@ -800,10 +866,6 @@ func (e *Engine) startToolForwarder(ctx context.Context) {
 					Payload:      toolEvt,
 					Metadata:     meta,
 				})
-
-				if toolEvt.Type == "item.completed" {
-					e.clearToolCallContext(toolEvt.Result.ID)
-				}
 			}
 		}
 	}()
@@ -883,7 +945,12 @@ func (e *Engine) collectToolResults(ctx context.Context, calls []tools.ToolCall,
 	waitCtx := ctx
 	cancel := func() {}
 	if e.toolTimeout > 0 {
-		waitCtx, cancel = context.WithTimeout(ctx, e.toolTimeout)
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			// Respect the existing deadline (typically already e.toolTimeout from runTurn).
+			// This keeps a single source of truth for tool cancellation timing.
+		} else {
+			waitCtx, cancel = context.WithTimeout(ctx, e.toolTimeout)
+		}
 	}
 	defer cancel()
 

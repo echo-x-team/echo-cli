@@ -12,6 +12,7 @@ type runtimeConfig struct {
 	DefaultLanguage    string
 	ReasoningEffort    string
 	RequestTimeoutSecs int
+	ToolTimeoutSecs    int
 	Retries            int
 }
 
@@ -21,6 +22,7 @@ func defaultRuntimeConfig() runtimeConfig {
 		DefaultLanguage:    i18n.DefaultLanguage.Code(),
 		ReasoningEffort:    "",
 		RequestTimeoutSecs: 120,
+		ToolTimeoutSecs:    600,
 		Retries:            0,
 	}
 }
@@ -43,6 +45,10 @@ func applyRuntimeKVOverrides(cfg runtimeConfig, overrides []string) runtimeConfi
 		case "request_timeout_seconds", "timeout":
 			if n, err := strconv.Atoi(val); err == nil && n > 0 {
 				cfg.RequestTimeoutSecs = n
+			}
+		case "tool_timeout_seconds", "tool_timeout", "tool-timeout-seconds", "tool-timeout":
+			if n, err := strconv.Atoi(val); err == nil && n > 0 {
+				cfg.ToolTimeoutSecs = n
 			}
 		case "retries":
 			if n, err := strconv.Atoi(val); err == nil && n >= 0 {

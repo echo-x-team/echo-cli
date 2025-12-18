@@ -111,3 +111,19 @@ func TestApplyPatchBeginPatch_InvalidDirective(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestApplyPatchBeginPatch_MissingEndPatch(t *testing.T) {
+	dir := t.TempDir()
+
+	patch := `*** Begin Patch
+*** Add File: x.txt
++hello`
+
+	err := ApplyPatch(context.Background(), dir, patch)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "missing *** End Patch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

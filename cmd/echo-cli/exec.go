@@ -221,9 +221,9 @@ func execMain(root rootArgs, args []string) {
 		emitHuman(ev)
 	}
 	manager := events.NewManager(events.ManagerConfig{})
-	toolTimeout := time.Duration(rt.RequestTimeoutSecs) * time.Second
+	toolTimeout := time.Duration(rt.ToolTimeoutSecs) * time.Second
 	if toolTimeout == 0 {
-		toolTimeout = 2 * time.Minute
+		toolTimeout = 10 * time.Minute
 	}
 	engine := execution.NewEngine(execution.Options{
 		Manager:        manager,
