@@ -26,8 +26,9 @@ func (o *Orchestrator) Run(ctx context.Context, inv Invocation, handler Handler,
 	base.Kind = handler.Kind()
 
 	dec := o.decision(handler, inv)
-	if !o.resolveApproval(inv.Call, base, dec, emit) {
-		return base
+	allowed, final := o.resolveApproval(inv.Call, base, dec, emit)
+	if !allowed {
+		return final
 	}
 
 	emit(ToolEvent{
@@ -105,9 +106,9 @@ func (o *Orchestrator) decision(handler Handler, inv Invocation) policy.Decision
 	return dec
 }
 
-func (o *Orchestrator) resolveApproval(call ToolCall, base ToolResult, dec policy.Decision, emit func(ToolEvent)) bool {
+func (o *Orchestrator) resolveApproval(call ToolCall, base ToolResult, dec policy.Decision, emit func(ToolEvent)) (bool, ToolResult) {
 	if dec.Allowed {
-		return true
+		return true, ToolResult{}
 	}
 
 	if dec.RequiresApproval {
@@ -130,30 +131,32 @@ func (o *Orchestrator) resolveApproval(call ToolCall, base ToolResult, dec polic
 			Reason: reason,
 		})
 		if approved {
-			return true
+			return true, ToolResult{}
 		}
-		emit(ToolEvent{
-			Type: "item.completed",
-			Result: ToolResult{
-				ID:     base.ID,
-				Kind:   base.Kind,
-				Status: "error",
-				Error:  reason,
-			},
-		})
-		return false
-	}
-
-	emit(ToolEvent{
-		Type: "item.completed",
-		Result: ToolResult{
+		final := ToolResult{
 			ID:     base.ID,
 			Kind:   base.Kind,
 			Status: "error",
-			Error:  dec.Reason,
-		},
+			Error:  reason,
+		}
+		emit(ToolEvent{
+			Type:   "item.completed",
+			Result: final,
+		})
+		return false, final
+	}
+
+	final := ToolResult{
+		ID:     base.ID,
+		Kind:   base.Kind,
+		Status: "error",
+		Error:  dec.Reason,
+	}
+	emit(ToolEvent{
+		Type:   "item.completed",
+		Result: final,
 	})
-	return false
+	return false, final
 }
 
 func (o *Orchestrator) shouldRetryWithoutSandbox(err error, pol policy.Policy) bool {

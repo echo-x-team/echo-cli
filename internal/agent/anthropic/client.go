@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"echo-cli/internal/agent"
@@ -77,33 +78,18 @@ func (c *Client) Complete(ctx context.Context, prompt agent.Prompt) (string, err
 func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	params := buildMessageParams(prompt, c.resolveModel(prompt.Model))
 	stream := c.api.Messages.NewStreaming(ctx, params)
+	state := newToolUseStreamState()
 
 	for stream.Next() {
 		event := stream.Current()
-		switch v := event.AsAny().(type) {
-		case anthropic.ContentBlockDeltaEvent:
-			switch d := v.Delta.AsAny().(type) {
-			case anthropic.TextDelta:
-				if d.Text != "" {
-					onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: d.Text})
-				}
-			}
-		case anthropic.ContentBlockStartEvent:
-			switch b := v.ContentBlock.AsAny().(type) {
-			case anthropic.ToolUseBlock:
-				raw := toolUseToFunctionCallItem(b)
-				if len(raw) > 0 {
-					onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
-				}
-			}
-		case anthropic.MessageStopEvent:
-			onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+		if state.Handle(event.AsAny(), onEvent) {
 			return nil
 		}
 	}
 	if err := stream.Err(); err != nil {
 		return err
 	}
+	state.Flush(onEvent)
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil
 }
@@ -248,16 +234,96 @@ func extractText(blocks []anthropic.ContentBlockUnion) string {
 	return sb.String()
 }
 
-func toolUseToFunctionCallItem(block anthropic.ToolUseBlock) json.RawMessage {
-	args := strings.TrimSpace(string(block.Input))
+type pendingToolUse struct {
+	id        string
+	name      string
+	startArgs json.RawMessage
+	partial   strings.Builder
+}
+
+type toolUseStreamState struct {
+	pending map[int64]*pendingToolUse
+}
+
+func newToolUseStreamState() *toolUseStreamState {
+	return &toolUseStreamState{pending: make(map[int64]*pendingToolUse)}
+}
+
+func (s *toolUseStreamState) Handle(event any, onEvent func(agent.StreamEvent)) (completed bool) {
+	switch v := event.(type) {
+	case anthropic.ContentBlockStartEvent:
+		switch b := v.ContentBlock.AsAny().(type) {
+		case anthropic.ToolUseBlock:
+			s.pending[v.Index] = &pendingToolUse{
+				id:        b.ID,
+				name:      b.Name,
+				startArgs: b.Input,
+			}
+		}
+	case anthropic.ContentBlockDeltaEvent:
+		switch d := v.Delta.AsAny().(type) {
+		case anthropic.TextDelta:
+			if d.Text != "" {
+				onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: d.Text})
+			}
+		case anthropic.InputJSONDelta:
+			if pending := s.pending[v.Index]; pending != nil {
+				pending.partial.WriteString(d.PartialJSON)
+			}
+		}
+	case anthropic.ContentBlockStopEvent:
+		s.flushIndex(v.Index, onEvent)
+	case anthropic.MessageStopEvent:
+		s.Flush(onEvent)
+		onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+		return true
+	}
+	return false
+}
+
+func (s *toolUseStreamState) Flush(onEvent func(agent.StreamEvent)) {
+	if len(s.pending) == 0 {
+		return
+	}
+	indexes := make([]int64, 0, len(s.pending))
+	for idx := range s.pending {
+		indexes = append(indexes, idx)
+	}
+	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
+	for _, idx := range indexes {
+		s.flushIndex(idx, onEvent)
+	}
+}
+
+func (s *toolUseStreamState) flushIndex(idx int64, onEvent func(agent.StreamEvent)) {
+	pending := s.pending[idx]
+	if pending == nil {
+		return
+	}
+	delete(s.pending, idx)
+
+	args := strings.TrimSpace(pending.partial.String())
+	if args == "" {
+		args = strings.TrimSpace(string(pending.startArgs))
+	}
+
+	raw := functionCallItem(pending.name, pending.id, args)
+	if len(raw) == 0 {
+		return
+	}
+	onEvent(agent.StreamEvent{Type: agent.StreamEventItem, Item: raw})
+}
+
+func functionCallItem(name, callID, args string) json.RawMessage {
+	args = strings.TrimSpace(args)
 	if args == "" {
 		args = "{}"
 	}
 	payload := map[string]any{
 		"type":      "function_call",
-		"name":      block.Name,
+		"name":      name,
 		"arguments": args,
-		"call_id":   block.ID,
+		"call_id":   callID,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

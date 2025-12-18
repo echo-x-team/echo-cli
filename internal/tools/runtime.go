@@ -41,6 +41,7 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	if !ok {
 		res := ToolResult{ID: call.ID, Status: "error", Error: "unknown tool", Kind: ToolKind("unknown")}
 		emit(ToolEvent{Type: "item.completed", Result: res})
+		logToolResult(call, kind, res, r.policy, r.workdir)
 		return res, fmt.Errorf("unknown tool: %s", call.Name)
 	}
 
@@ -60,6 +61,7 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	}
 
 	result := r.orchestrator.Run(ctx, inv, handler, emit)
+	logToolResult(call, kind, result, r.policy, r.workdir)
 	return result, nil
 }
 
@@ -72,7 +74,7 @@ func logToolRequest(call ToolCall, kind ToolKind, recognized bool, pol policy.Po
 	}
 	payload := "(empty)"
 	if len(call.Payload) > 0 {
-		payload = sanitizePayload(call.Payload)
+		payload = sanitizeForLog(call.Payload)
 	}
 	wd := workdir
 	if strings.TrimSpace(wd) == "" {
@@ -82,7 +84,26 @@ func logToolRequest(call ToolCall, kind ToolKind, recognized bool, pol policy.Po
 		call.ID, call.Name, kind, status, pol.SandboxMode, pol.ApprovalPolicy, wd, payload)
 }
 
-func sanitizePayload(raw []byte) string {
+func logToolResult(call ToolCall, kind ToolKind, result ToolResult, pol policy.Policy, workdir string) {
+	ensureToolsLogger()
+
+	payload := "(empty)"
+	if len(call.Payload) > 0 {
+		payload = sanitizeForLog(call.Payload)
+	}
+	wd := workdir
+	if strings.TrimSpace(wd) == "" {
+		wd = "."
+	}
+	errText := sanitizeForLog([]byte(result.Error))
+	if strings.TrimSpace(errText) == "" {
+		errText = "(empty)"
+	}
+	toolsLog.Infof("tool_result id=%s name=%s kind=%s status=%s sandbox=%s approval=%s workdir=%s exit_code=%d error=%s payload=%s",
+		call.ID, call.Name, kind, result.Status, pol.SandboxMode, pol.ApprovalPolicy, wd, result.ExitCode, errText, payload)
+}
+
+func sanitizeForLog(raw []byte) string {
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
 		return "(empty)"
