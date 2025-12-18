@@ -28,6 +28,7 @@ type Options struct {
 	ToolTimeout    time.Duration
 	RequestTimeout time.Duration
 	Retries        int
+	RetryDelay     time.Duration
 }
 
 // Engine 实现 SQ→核心→EQ 的执行流程。
@@ -43,6 +44,7 @@ type Engine struct {
 	toolTimeout    time.Duration
 	requestTimeout time.Duration
 	retries        int
+	retryDelay     time.Duration
 
 	toolCtxMu sync.Mutex
 	toolCtx   map[string]toolCallContext // tool call id -> submission context
@@ -78,6 +80,10 @@ func NewEngine(opts Options) *Engine {
 	if reqTimeout == 0 {
 		reqTimeout = 2 * time.Minute
 	}
+	retryDelay := opts.RetryDelay
+	if retryDelay == 0 {
+		retryDelay = time.Second
+	}
 	return &Engine{
 		manager:        manager,
 		contexts:       NewContextManager(opts.Defaults),
@@ -87,6 +93,7 @@ func NewEngine(opts Options) *Engine {
 		toolTimeout:    toolTimeout,
 		requestTimeout: reqTimeout,
 		retries:        opts.Retries,
+		retryDelay:     retryDelay,
 		toolCtx:        map[string]toolCallContext{},
 	}
 }
@@ -748,8 +755,16 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 	if model == "" {
 		return errors.New("model not specified")
 	}
+	retryDelay := e.retryDelay
+	if retryDelay <= 0 {
+		retryDelay = time.Second
+	}
+	maxRetries := e.retries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	var lastErr error
-	for attempt := 0; attempt <= e.retries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		out.Infof(
 			"agent->llm request attempt=%d model=%s messages=%d tools=%d parallel_tools=%t output_schema_len=%d",
 			attempt+1,
@@ -786,8 +801,34 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(a
 		}
 		in.Errorf("llm->agent error attempt=%d model=%s err=%v", attempt+1, model, err)
 		lastErr = err
+
+		// Anthropic 偶发返回 api_error: "Internal Network Failure"。
+		// 该错误通常是临时网络抖动，等待 1s 后重试一次可显著提升成功率。
+		if isInternalNetworkFailure(err) && maxRetries < 1 {
+			maxRetries = 1
+		}
+		if attempt >= maxRetries {
+			break
+		}
+		if isInternalNetworkFailure(err) {
+			in.Warnf("llm->agent retrying after internal network failure sleep=%s attempt=%d model=%s", retryDelay, attempt+1, model)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
 	return lastErr
+}
+
+func isInternalNetworkFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "internal network failure")
 }
 
 func sanitizeLogText(text string) string {
