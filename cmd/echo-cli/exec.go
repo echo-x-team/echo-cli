@@ -172,6 +172,9 @@ func execMain(root rootArgs, args []string) {
 	endpoint = config.ApplyKVOverrides(endpoint, []string(configOverrides))
 
 	rt := defaultRuntimeConfig()
+	if strings.TrimSpace(endpoint.Model) != "" {
+		rt.Model = strings.TrimSpace(endpoint.Model)
+	}
 	if strings.TrimSpace(modelOverride) != "" {
 		rt.Model = strings.TrimSpace(modelOverride)
 	}
@@ -186,10 +189,10 @@ func execMain(root rootArgs, args []string) {
 	}
 	rt = applyRuntimeKVOverrides(rt, []string(configOverrides))
 	if strings.TrimSpace(providerOverride) != "" {
-		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token", providerOverride)
+		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token/model", providerOverride)
 	}
 	if strings.TrimSpace(configProfile) != "" {
-		log.Warnf("config profile %q is ignored; echo-cli now configures only url/token", configProfile)
+		log.Warnf("config profile %q is ignored; echo-cli now configures only url/token/model", configProfile)
 	}
 	if !oss && strings.TrimSpace(localProvider) != "" {
 		log.Warnf("local-provider=%q ignored unless --oss is set", localProvider)

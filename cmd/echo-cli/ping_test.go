@@ -17,6 +17,7 @@ func TestPingCommand_BinaryRoundTrip(t *testing.T) {
 		t.Skip("skipping binary build in -short mode")
 	}
 
+	expectedModel := "glm4.6.test"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			http.NotFound(w, r)
@@ -26,12 +27,21 @@ func TestPingCommand_BinaryRoundTrip(t *testing.T) {
 			http.Error(w, "missing auth", http.StatusUnauthorized)
 			return
 		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if got, _ := payload["model"].(string); strings.TrimSpace(got) != expectedModel {
+			http.Error(w, "unexpected model", http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":    "msg_1",
 			"type":  "message",
 			"role":  "assistant",
-			"model": "claude-3-5-sonnet-20240620",
+			"model": expectedModel,
 			"content": []map[string]any{
 				{"type": "text", "text": "pong", "citations": []any{}},
 			},
@@ -88,6 +98,7 @@ func TestPingCommand_BinaryRoundTrip(t *testing.T) {
 			if err := os.WriteFile(cfgPath, []byte(`
 url = "`+tt.url+`"
 token = "test-key"
+model = "`+expectedModel+`"
 `), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}

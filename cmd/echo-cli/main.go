@@ -120,6 +120,9 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 	endpoint = config.ApplyKVOverrides(endpoint, []string(cli.configOverrides))
 
 	rt := defaultRuntimeConfig()
+	if strings.TrimSpace(endpoint.Model) != "" {
+		rt.Model = strings.TrimSpace(endpoint.Model)
+	}
 	if strings.TrimSpace(cli.modelOverride) != "" {
 		rt.Model = strings.TrimSpace(cli.modelOverride)
 	}

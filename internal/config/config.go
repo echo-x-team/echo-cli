@@ -13,11 +13,14 @@ import (
 type Config struct {
 	URL    string `toml:"url"`
 	Token  string `toml:"token"`
+	Model  string `toml:"model"`
 	Source string `toml:"-"`
 }
 
 func Default() Config {
-	return Config{}
+	return Config{
+		Model: "glm4.6",
+	}
 }
 
 func DefaultPath() string {

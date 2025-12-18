@@ -50,10 +50,13 @@ func runPing(root rootArgs, args []string, out io.Writer) error {
 	cfg = config.ApplyKVOverrides(cfg, prependOverrides(root.overrides, nil))
 
 	if strings.TrimSpace(providerOverride) != "" {
-		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token", providerOverride)
+		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token/model", providerOverride)
 	}
 
 	model := strings.TrimSpace(modelOverride)
+	if model == "" {
+		model = strings.TrimSpace(cfg.Model)
+	}
 	if model == "" {
 		model = defaultRuntimeConfig().Model
 	}

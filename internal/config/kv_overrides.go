@@ -21,6 +21,8 @@ func ApplyKVOverrides(cfg Config, overrides []string) Config {
 			cfg.URL = val
 		case "token":
 			cfg.Token = val
+		case "model":
+			cfg.Model = val
 		}
 	}
 	return cfg

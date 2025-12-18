@@ -34,8 +34,8 @@ go run ./cmd/echo-cli exec --prompt "任务"
   - `ANTHROPIC_BASE_URL` (e.g. `https://open.bigmodel.cn/api/anthropic`)
   - `ANTHROPIC_AUTH_TOKEN` (provider auth token)
 - Config file: `~/.echo/config.toml` (or override via `--config <path>`):
-  - `url = "..."` and `token = "..."`
-- Other runtime settings (language/timeouts) are controlled via CLI flags or `-c key=value` overrides and are not persisted in the config file.
+  - `url = "..."`, `token = "..."`, `model = "glm4.6"`
+- Other runtime settings (language/timeouts) are controlled via CLI flags or `-c key=value` overrides.
 
 ## CLI (M1+)
 
@@ -55,7 +55,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 ## Code layout
 
 - `cmd/echo-cli`: CLI entry.
-- `internal/config`: endpoint config loading (url/token).
+- `internal/config`: endpoint config loading (url/token/model).
 - `internal/agent`: agent loop + model abstraction (Anthropic-compatible client + streaming).
 - `internal/tui`: Bubble Tea UI (transcript + composer + status bar + @ search + slash commands + session picker).
 - `internal/tools`: shell + patch helpers (direct execution).

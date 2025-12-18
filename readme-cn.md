@@ -33,9 +33,9 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - 环境变量（优先级最高）：
   - `ANTHROPIC_BASE_URL`（例如 `https://open.bigmodel.cn/api/anthropic`）
   - `ANTHROPIC_AUTH_TOKEN`（鉴权 token）
-- 配置文件：`~/.echo/config.toml`（可通过 `--config <path>` 覆盖）仅包含：
-  - `url = "..."` 与 `token = "..."`
-- 其他运行参数（语言/超时等）通过 CLI flag 或 `-c key=value` 覆盖控制，不写入配置文件。
+- 配置文件：`~/.echo/config.toml`（可通过 `--config <path>` 覆盖）包含：
+  - `url = "..."`、`token = "..."`、`model = "glm4.6"`
+- 其他运行参数（语言/超时等）通过 CLI flag 或 `-c key=value` 覆盖控制。
 
 ## CLI（M1+）
 
@@ -55,7 +55,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 ## 代码结构
 
 - `cmd/echo-cli`：CLI 入口。
-- `internal/config`：端点配置加载（url/token）。
+- `internal/config`：端点配置加载（url/token/model）。
 - `internal/agent`：agent 循环与模型抽象（Anthropic 兼容客户端与流式支持）。
 - `internal/tui`：Bubble Tea UI（对话流、输入栏、状态栏、@ 搜索、斜杠命令、会话选择器）。
 - `internal/tools`：shell 与补丁工具（直接执行）。

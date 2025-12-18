@@ -18,7 +18,7 @@ type runtimeConfig struct {
 
 func defaultRuntimeConfig() runtimeConfig {
 	return runtimeConfig{
-		Model:              "claude-3-5-sonnet-20240620",
+		Model:              "glm4.6",
 		DefaultLanguage:    i18n.DefaultLanguage.Code(),
 		ReasoningEffort:    "",
 		RequestTimeoutSecs: 120,
