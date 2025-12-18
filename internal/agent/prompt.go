@@ -1,6 +1,6 @@
 package agent
 
-// ToolSpec 描述可供模型调用的工具定义，遵循 OpenAI function 工具的 schema 约定。
+// ToolSpec 描述可供模型调用的工具定义，遵循 function 工具的通用 schema 约定。
 type ToolSpec struct {
 	Name        string
 	Description string

@@ -4,20 +4,19 @@ go 1.24.0
 
 require (
 	github.com/atotto/clipboard v0.1.4
+	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/creack/pty v1.1.20
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-runewidth v0.0.16
-	github.com/openai/openai-go/v3 v3.11.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/sirupsen/logrus v1.9.3
 )
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.19.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/x/ansi v0.10.1 // indirect

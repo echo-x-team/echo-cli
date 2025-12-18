@@ -97,7 +97,6 @@ token = "test-key"
 			run.Dir = tmp
 			run.Env = append(os.Environ(),
 				"HOME="+tmp,
-				"OPENAI_API_KEY=",
 				"ANTHROPIC_BASE_URL=",
 				"ANTHROPIC_AUTH_TOKEN=",
 			)

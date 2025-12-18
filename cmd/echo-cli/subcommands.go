@@ -65,8 +65,6 @@ func loginMain(root rootArgs, args []string) {
 		key = readTokenFromStdin()
 	case strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")) != "":
 		key = strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
-	case strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "":
-		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	default:
 		key = promptToken()
 	}

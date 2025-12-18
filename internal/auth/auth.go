@@ -10,9 +10,9 @@ import (
 )
 
 type Credentials struct {
-	APIKey  string    `json:"api_key"`
-	Legacy  string    `json:"OPENAI_API_KEY"`
-	Updated time.Time `json:"updated"`
+	APIKey       string    `json:"api_key"`
+	LegacyAPIKey string    `json:"OPENAI_API_KEY"`
+	Updated      time.Time `json:"updated"`
 }
 
 func authPath() (string, error) {
@@ -62,7 +62,7 @@ func LoadAPIKey() (string, error) {
 	}
 	key := strings.TrimSpace(creds.APIKey)
 	if key == "" {
-		key = strings.TrimSpace(creds.Legacy)
+		key = strings.TrimSpace(creds.LegacyAPIKey)
 	}
 	return key, nil
 }
