@@ -15,27 +15,13 @@ type taskSummaryAccumulator struct {
 	start time.Time
 
 	seenToolCalls map[string]struct{}
-	toolStats     map[tools.ToolKind]toolStat
-
-	toolFailures []tools.ToolResult
-
-	commands     []tools.ToolResult
-	fileChanges  []tools.ToolResult
-	fileReads    int
-	fileSearches int
-	planUpdates  int
-}
-
-type toolStat struct {
-	total  int
-	failed int
+	toolFailures  []tools.ToolResult
 }
 
 func newTaskSummaryAccumulator(start time.Time) *taskSummaryAccumulator {
 	return &taskSummaryAccumulator{
 		start:         start,
 		seenToolCalls: map[string]struct{}{},
-		toolStats:     map[tools.ToolKind]toolStat{},
 	}
 }
 
@@ -52,25 +38,8 @@ func (a *taskSummaryAccumulator) ObserveToolResults(results []tools.ToolResult) 
 		}
 		a.seenToolCalls[res.ID] = struct{}{}
 
-		stat := a.toolStats[res.Kind]
-		stat.total++
 		if res.Status == "error" || strings.TrimSpace(res.Error) != "" || res.ExitCode != 0 {
-			stat.failed++
 			a.toolFailures = append(a.toolFailures, res)
-		}
-		a.toolStats[res.Kind] = stat
-
-		switch res.Kind {
-		case tools.ToolCommand:
-			a.commands = append(a.commands, res)
-		case tools.ToolApplyPatch:
-			a.fileChanges = append(a.fileChanges, res)
-		case tools.ToolFileRead:
-			a.fileReads++
-		case tools.ToolSearch:
-			a.fileSearches++
-		case tools.ToolPlanUpdate:
-			a.planUpdates++
 		}
 	}
 }
@@ -92,13 +61,6 @@ func (a *taskSummaryAccumulator) Build(
 		Status:       status,
 		Model:        turnCtx.Model,
 		Duration:     duration,
-		FinalContent: finalContent,
-		ToolStats:    a.toolStats,
-		Commands:     a.commands,
-		FileChanges:  a.fileChanges,
-		FileReads:    a.fileReads,
-		FileSearches: a.fileSearches,
-		PlanUpdates:  a.planUpdates,
 		ToolFailures: a.toolFailures,
 		ExitReason:   exitReason,
 		ExitStage:    exitStage,
@@ -162,17 +124,10 @@ func countApproxTokens(text string) int64 {
 }
 
 type taskSummaryTextArgs struct {
-	Status       string
-	Model        string
-	Duration     time.Duration
-	FinalContent string
+	Status   string
+	Model    string
+	Duration time.Duration
 
-	ToolStats    map[tools.ToolKind]toolStat
-	Commands     []tools.ToolResult
-	FileChanges  []tools.ToolResult
-	FileReads    int
-	FileSearches int
-	PlanUpdates  int
 	ToolFailures []tools.ToolResult
 
 	ExitReason string
@@ -181,6 +136,10 @@ type taskSummaryTextArgs struct {
 }
 
 func formatTaskSummaryText(args taskSummaryTextArgs) string {
+	if args.Status == "completed" {
+		return ""
+	}
+
 	var b strings.Builder
 	b.WriteString("【任务总结】\n")
 	b.WriteString(fmt.Sprintf("状态：%s\n", formatStatusForHuman(args.Status)))
@@ -191,38 +150,18 @@ func formatTaskSummaryText(args taskSummaryTextArgs) string {
 		b.WriteString(fmt.Sprintf("耗时：%s\n", formatDuration(args.Duration)))
 	}
 
-	if fc := strings.TrimSpace(args.FinalContent); fc != "" {
-		b.WriteString(fmt.Sprintf("最终回复：%s\n", truncateOneLine(fc, 240)))
-	} else if args.Status == "completed" {
-		b.WriteString("最终回复：（空）\n")
+	if stage := strings.TrimSpace(args.ExitStage); stage != "" {
+		b.WriteString(fmt.Sprintf("退出阶段：%s\n", stage))
+	}
+	if reason := strings.TrimSpace(args.ExitReason); reason != "" {
+		b.WriteString(fmt.Sprintf("退出原因：%s\n", reason))
+	}
+	if errText := strings.TrimSpace(errString(args.Err)); errText != "" {
+		b.WriteString(fmt.Sprintf("错误：%s\n", truncateOneLine(errText, 240)))
 	}
 
-	b.WriteString("工具统计：")
-	b.WriteString(formatToolStatsLine(args))
-	b.WriteString("\n")
-
-	if len(args.Commands) > 0 {
-		b.WriteString("命令执行：\n")
-		for _, cmd := range args.Commands {
-			line := formatCommandSummary(cmd)
-			if line != "" {
-				b.WriteString("  - " + line + "\n")
-			}
-		}
-	}
-
-	if len(args.FileChanges) > 0 {
-		b.WriteString("文件变更：\n")
-		for _, ch := range args.FileChanges {
-			line := formatFileChangeSummary(ch)
-			if line != "" {
-				b.WriteString("  - " + line + "\n")
-			}
-		}
-	}
-
-	if len(args.ToolFailures) > 0 && args.Status == "completed" {
-		b.WriteString("本轮出现的工具失败（模型已自行处理并继续）：\n")
+	if len(args.ToolFailures) > 0 {
+		b.WriteString("工具失败：\n")
 		for i, fail := range args.ToolFailures {
 			if i >= 3 {
 				b.WriteString(fmt.Sprintf("  - ... 以及另外 %d 个\n", len(args.ToolFailures)-3))
@@ -232,10 +171,8 @@ func formatTaskSummaryText(args taskSummaryTextArgs) string {
 		}
 	}
 
-	if args.Status != "completed" {
-		b.WriteString("失败原因分析：\n")
-		b.WriteString("  - " + analyzeFailure(args) + "\n")
-	}
+	b.WriteString("错误分析：\n")
+	b.WriteString("  - " + analyzeFailure(args) + "\n")
 
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -272,29 +209,6 @@ func truncateOneLine(text string, max int) string {
 		return text[:max]
 	}
 	return text[:max-3] + "..."
-}
-
-func formatToolStatsLine(args taskSummaryTextArgs) string {
-	parts := []string{}
-	if stat, ok := args.ToolStats[tools.ToolCommand]; ok && stat.total > 0 {
-		parts = append(parts, fmt.Sprintf("command_execution=%d(失败%d)", stat.total, stat.failed))
-	}
-	if stat, ok := args.ToolStats[tools.ToolApplyPatch]; ok && stat.total > 0 {
-		parts = append(parts, fmt.Sprintf("file_change=%d(失败%d)", stat.total, stat.failed))
-	}
-	if args.FileReads > 0 {
-		parts = append(parts, fmt.Sprintf("file_read=%d", args.FileReads))
-	}
-	if args.FileSearches > 0 {
-		parts = append(parts, fmt.Sprintf("file_search=%d", args.FileSearches))
-	}
-	if args.PlanUpdates > 0 {
-		parts = append(parts, fmt.Sprintf("plan_update=%d", args.PlanUpdates))
-	}
-	if len(parts) == 0 {
-		return "无"
-	}
-	return strings.Join(parts, "；")
 }
 
 func formatCommandSummary(res tools.ToolResult) string {

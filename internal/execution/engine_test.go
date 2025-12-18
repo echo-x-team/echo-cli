@@ -83,8 +83,8 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 	if !seenSummary {
 		t.Fatalf("expected task summary event")
 	}
-	if !strings.Contains(summary.Text, "【任务总结】") {
-		t.Fatalf("unexpected summary text: %q", summary.Text)
+	if strings.TrimSpace(summary.Text) != "" {
+		t.Fatalf("expected empty summary text on success, got %q", summary.Text)
 	}
 	if summary.Status != "completed" {
 		t.Fatalf("expected summary status completed, got %+v", summary)
@@ -144,8 +144,11 @@ func TestEngineEmitsSummaryOnFailure(t *testing.T) {
 				if s.Status != "failed" {
 					t.Fatalf("expected failed summary status, got %+v", s)
 				}
-				if !strings.Contains(s.Text, "失败原因分析") {
-					t.Fatalf("expected failure analysis in summary text, got %q", s.Text)
+				if !strings.Contains(s.Text, "错误分析") {
+					t.Fatalf("expected error analysis in summary text, got %q", s.Text)
+				}
+				if strings.Contains(s.Text, "最终回复") {
+					t.Fatalf("unexpected final reply in summary text, got %q", s.Text)
 				}
 			case events.EventTaskCompleted:
 				seenCompleted = true
