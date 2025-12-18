@@ -15,6 +15,7 @@ import (
 	"echo-cli/internal/config"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
+	"echo-cli/internal/history"
 	"echo-cli/internal/instructions"
 	"echo-cli/internal/repl"
 	"echo-cli/internal/session"
@@ -149,6 +150,13 @@ func execMain(root rootArgs, args []string) {
 	reviewMode := subcommand == "review"
 	if prompt == "" && sessionID == "" && !resumeLast {
 		log.Fatalf("prompt is required for exec unless resuming a session")
+	}
+	if strings.TrimSpace(prompt) != "" {
+		if hs, err := history.NewDefault(); err == nil {
+			if err := hs.Append(prompt); err != nil {
+				log.Warnf("append history failed: %v", err)
+			}
+		}
 	}
 	switch strings.ToLower(colorMode) {
 	case "auto", "always", "never":

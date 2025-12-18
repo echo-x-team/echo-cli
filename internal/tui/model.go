@@ -11,6 +11,7 @@ import (
 	"echo-cli/internal/agent"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
+	"echo-cli/internal/history"
 	"echo-cli/internal/i18n"
 	"echo-cli/internal/logger"
 	"echo-cli/internal/search"
@@ -123,6 +124,8 @@ type Model struct {
 	events                   []uiEvent
 	resumeSessionID          string
 	updateAction             string
+	historyStore             *history.Store
+	history                  promptHistory
 	width                    int
 	height                   int
 	eventsWidth              int
@@ -246,6 +249,15 @@ func New(opts Options) *Model {
 		m.gateway = opts.Gateway
 		m.eqSub = opts.Gateway.Events()
 	}
+
+	if hs, err := history.NewDefault(); err == nil {
+		m.historyStore = hs
+		if texts, err := hs.LoadTexts(); err == nil {
+			m.history.Set(texts)
+		} else {
+			m.logEvent("history_error", fmt.Sprintf("load history failed: %v", err))
+		}
+	}
 	return &m
 }
 
@@ -288,6 +300,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		return m.finish(cmds...)
 	case startPromptMsg:
+		m.recordHistory(msg.Text)
 		m.appendUserMessage(msg.Text)
 		m.appendAssistantPlaceholder()
 		m.streamIdx = len(m.messages) - 1
@@ -407,6 +420,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.finish(cmds...)
 			}
 		}
+		if m.history.Browsing() && isHistoryEditingKey(msg) {
+			m.history.ResetBrowsing()
+		}
+		if m.handleHistoryKeys(msg) {
+			return m.finish(cmds...)
+		}
 		if cmd, handled := m.handleScrollKeys(msg); handled {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
@@ -430,6 +449,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if input == "" {
 					return m.finish(cmds...)
 				}
+				m.recordHistory(input)
 				m.enqueueQueued(input)
 				m.textarea.Reset()
 				m.setComposerHeight()
@@ -446,6 +466,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m.finish(cmds...)
 			}
+			m.recordHistory(input)
 			m.appendUserMessage(input)
 			m.appendAssistantPlaceholder()
 			m.streamIdx = len(m.messages) - 1
@@ -472,6 +493,59 @@ func (m *Model) finish(cmds ...tea.Cmd) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func isHistoryEditingKey(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyRunes, tea.KeyBackspace, tea.KeyDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Model) handleHistoryKeys(msg tea.KeyMsg) bool {
+	if msg.Alt {
+		return false
+	}
+	if msg.Type != tea.KeyUp && msg.Type != tea.KeyDown {
+		return false
+	}
+	// 多行输入默认保留上下移动光标的行为；单行输入才接管为历史浏览。
+	if m.textarea.LineCount() > 1 {
+		return false
+	}
+
+	switch msg.Type {
+	case tea.KeyUp:
+		if next, ok := m.history.Prev(m.textarea.Value()); ok {
+			m.textarea.SetValue(next)
+			m.moveCursorToColumn(len(next))
+			m.setComposerHeight()
+			return true
+		}
+	case tea.KeyDown:
+		if next, ok := m.history.Next(); ok {
+			m.textarea.SetValue(next)
+			m.moveCursorToColumn(len(next))
+			m.setComposerHeight()
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) recordHistory(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if m.historyStore != nil {
+		if err := m.historyStore.Append(text); err != nil {
+			m.logEvent("history_error", fmt.Sprintf("append history failed: %v", err))
+		}
+	}
+	m.history.Add(text)
 }
 
 func (m *Model) View() string {
@@ -918,6 +992,11 @@ func (m *Model) applySlashAction(action slash.Action) tea.Cmd {
 			m.setComposerHeight()
 		}
 	case slash.ActionSubmitCommand:
+		cmdText := "/" + string(action.Command)
+		if strings.TrimSpace(action.Args) != "" {
+			cmdText += " " + action.Args
+		}
+		m.recordHistory(cmdText)
 		m.textarea.Reset()
 		m.setComposerHeight()
 		return m.executeSlashCommand(action.Command, action.Args)
@@ -943,6 +1022,7 @@ func (m *Model) submitSlashPrompt(action slash.Action) tea.Cmd {
 	if text == "" {
 		return nil
 	}
+	m.recordHistory(text)
 	if m.pending {
 		m.enqueueQueued(text)
 		return nil
