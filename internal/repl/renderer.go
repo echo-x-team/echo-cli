@@ -202,7 +202,7 @@ func (toolEventRenderer) Handle(r *EQRenderer, evt events.Event) {
 	}
 	// In REPL human output, render key tool lifecycle events as their own blocks.
 	switch tev.Type {
-	case "approval.requested", "approval.completed", "item.started", "item.completed":
+	case "item.started", "item.updated", "item.completed":
 		r.ScrollbackAppend(newToolEventCell(tev))
 	}
 }

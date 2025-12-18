@@ -5,9 +5,7 @@ import (
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
 	"echo-cli/internal/logger"
-	"echo-cli/internal/policy"
-	"echo-cli/internal/sandbox"
-	"echo-cli/internal/tools/engine"
+	"echo-cli/internal/tools"
 	"echo-cli/internal/tui"
 	"echo-cli/internal/tui/slash"
 )
@@ -18,16 +16,12 @@ type UIOptions struct {
 	Gateway         *Gateway
 	Model           string
 	Reasoning       string
-	Sandbox         string
 	Workdir         string
 	InitialPrompt   string
 	Language        string
 	InitialMessages []agent.Message
-	Roots           []string
-	Policy          policy.Policy
 	Events          *events.Bus
-	Runner          sandbox.Runner
-	Approver        *engine.UIApprover
+	Runner          tools.Runner
 	ResumePicker    bool
 	ResumeShowAll   bool
 	ResumeSessions  []string
@@ -53,16 +47,12 @@ func RunUI(opts UIOptions) (UIResult, error) {
 		Gateway:         opts.Gateway,
 		Model:           opts.Model,
 		Reasoning:       opts.Reasoning,
-		Sandbox:         opts.Sandbox,
 		Workdir:         opts.Workdir,
 		InitialPrompt:   opts.InitialPrompt,
 		Language:        opts.Language,
 		InitialMessages: opts.InitialMessages,
-		Roots:           opts.Roots,
-		Policy:          opts.Policy,
 		Events:          opts.Events,
 		Runner:          opts.Runner,
-		Approver:        opts.Approver,
 		ResumePicker:    opts.ResumePicker,
 		ResumeShowAll:   opts.ResumeShowAll,
 		ResumeSessions:  opts.ResumeSessions,

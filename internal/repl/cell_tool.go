@@ -37,36 +37,6 @@ func (c toolEventCell) Render(width int) []tuirender.Line {
 	kind := string(c.ev.Result.Kind)
 
 	switch c.ev.Type {
-	case "approval.requested":
-		desc := approvalDescFromToolResult(c.ev.Result)
-		if strings.TrimSpace(c.ev.Reason) != "" {
-			desc = strings.TrimSpace(c.ev.Reason)
-		}
-		out = append(out, tuirender.Line{Spans: []tuirender.Span{
-			{Text: "? ", Style: kindStyle},
-			{Text: "approval.requested", Style: kindStyle},
-			{Text: " ", Style: kindStyle},
-			{Text: desc, Style: dim},
-		}})
-		return out
-	case "approval.completed":
-		status := "approved"
-		st := okStyle
-		if strings.Contains(strings.ToLower(c.ev.Reason), "denied") {
-			status = "denied"
-			st = errStyle
-		}
-		msg := strings.TrimSpace(c.ev.Reason)
-		if msg == "" {
-			msg = status
-		}
-		out = append(out, tuirender.Line{Spans: []tuirender.Span{
-			{Text: "✓ ", Style: st},
-			{Text: "approval.completed", Style: kindStyle},
-			{Text: " ", Style: kindStyle},
-			{Text: msg, Style: dim},
-		}})
-		return out
 	case "item.updated":
 		// Keep REPL output low-noise; item.updated is mostly internal status today.
 		return nil
@@ -116,36 +86,6 @@ func (c toolEventCell) Render(width int) []tuirender.Line {
 	default:
 		out = append(out, tuirender.Line{Spans: []tuirender.Span{{Text: fmt.Sprintf("%s %s", c.ev.Type, kind), Style: dim}}})
 		return out
-	}
-}
-
-func approvalDescFromToolResult(res tools.ToolResult) string {
-	switch res.Kind {
-	case tools.ToolCommand:
-		if strings.TrimSpace(res.Command) != "" {
-			return "command: " + strings.TrimSpace(res.Command)
-		}
-		return "command execution"
-	case tools.ToolApplyPatch:
-		if strings.TrimSpace(res.Path) != "" {
-			return "apply patch: " + strings.TrimSpace(res.Path)
-		}
-		return "apply patch"
-	case tools.ToolFileRead:
-		if strings.TrimSpace(res.Path) != "" {
-			return "read file: " + strings.TrimSpace(res.Path)
-		}
-		return "read file"
-	case tools.ToolSearch:
-		if strings.TrimSpace(res.Output) != "" {
-			return "search: " + strings.TrimSpace(res.Output)
-		}
-		return "search workspace"
-	default:
-		if strings.TrimSpace(res.Status) != "" {
-			return strings.TrimSpace(res.Status)
-		}
-		return "approval required"
 	}
 }
 

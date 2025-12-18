@@ -14,22 +14,6 @@ const maxToolBlockLines = 60
 // (no ANSI) and is intended to be wrapped by the transcript renderer.
 func FormatToolEventBlock(ev tools.ToolEvent) string {
 	switch ev.Type {
-	case "approval.requested":
-		desc := strings.TrimSpace(ev.Reason)
-		if desc == "" {
-			desc = toolApprovalDesc(ev.Result)
-		}
-		head := fmt.Sprintf("? approval required: %s", desc)
-		if ev.Result.Kind == tools.ToolApplyPatch && strings.TrimSpace(ev.Result.Diff) != "" {
-			return toolBlockWithDiff(head, ev.Result.Diff)
-		}
-		return head
-	case "approval.completed":
-		reason := strings.TrimSpace(ev.Reason)
-		if reason == "" {
-			reason = "completed"
-		}
-		return fmt.Sprintf("✓ approval %s", reason)
 	case "item.started":
 		head, detail := toolStartLine(ev.Result)
 		if detail == "" {
@@ -42,32 +26,10 @@ func FormatToolEventBlock(ev tools.ToolEvent) string {
 		return line
 	case "item.completed":
 		return toolCompletedBlock(ev.Result)
+	case "item.updated":
+		return ""
 	default:
 		return ""
-	}
-}
-
-func toolApprovalDesc(res tools.ToolResult) string {
-	switch res.Kind {
-	case tools.ToolCommand:
-		if strings.TrimSpace(res.Command) != "" {
-			return "command: " + strings.TrimSpace(res.Command)
-		}
-		return "command execution"
-	case tools.ToolApplyPatch:
-		if strings.TrimSpace(res.Path) != "" {
-			return "apply patch: " + strings.TrimSpace(res.Path)
-		}
-		return "apply patch"
-	case tools.ToolFileRead:
-		if strings.TrimSpace(res.Path) != "" {
-			return "read file: " + strings.TrimSpace(res.Path)
-		}
-		return "read file"
-	case tools.ToolSearch:
-		return "search workspace"
-	default:
-		return "approval required"
 	}
 }
 

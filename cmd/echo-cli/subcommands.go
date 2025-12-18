@@ -13,8 +13,7 @@ import (
 
 	"echo-cli/internal/config"
 	"echo-cli/internal/features"
-	"echo-cli/internal/policy"
-	"echo-cli/internal/sandbox"
+	"echo-cli/internal/tools"
 )
 
 func reviewMain(root rootArgs, args []string) {
@@ -96,11 +95,9 @@ func applyMain(root rootArgs, args []string) {
 	var cfgPath string
 	var patchPath string
 	var workdir string
-	var sandboxMode string
 	fs.StringVar(&cfgPath, "config", "", "Path to config file (default ~/.echo/config.toml)")
 	fs.StringVar(&patchPath, "patch", "", "Path to unified diff (default: patch.diff or first arg)")
 	fs.StringVar(&workdir, "cd", "", "Working directory to apply the patch in")
-	fs.StringVar(&sandboxMode, "sandbox", "", "Sandbox mode (read-only|workspace-write|danger-full-access)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parse apply args: %v", err)
 	}
@@ -118,75 +115,11 @@ func applyMain(root rootArgs, args []string) {
 	}
 
 	_ = cfgPath
-	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
-	if sandboxMode != "" {
-		rt.SandboxMode = sandboxMode
-	}
 	workdir = resolveWorkdir(workdir)
-	roots := []string{workdir}
-	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
-	if err := runner.ApplyPatch(context.Background(), workdir, string(data)); err != nil {
+	if err := tools.ApplyPatch(context.Background(), workdir, string(data)); err != nil {
 		log.Fatalf("apply patch failed: %v", err)
 	}
 	fmt.Printf("Applied patch from %s\n", patchPath)
-}
-
-func sandboxMain(root rootArgs, args []string) {
-	fs := flag.NewFlagSet("sandbox", flag.ExitOnError)
-	var sandboxMode string
-	var workdir string
-	var cfgPath string
-	var addDirs stringSlice
-	fs.StringVar(&sandboxMode, "sandbox", "", "Sandbox mode (read-only|workspace-write|danger-full-access)")
-	fs.StringVar(&sandboxMode, "s", "", "Alias for --sandbox")
-	fs.StringVar(&workdir, "cd", "", "Working directory")
-	fs.StringVar(&cfgPath, "config", "", "Path to config file (default ~/.echo/config.toml)")
-	fs.Var(&addDirs, "add-dir", "Additional allowed workspace root (repeatable)")
-	if err := fs.Parse(args); err != nil {
-		log.Fatalf("parse sandbox args: %v", err)
-	}
-	if fs.NArg() == 0 {
-		log.Fatalf("sandbox requires a command to run")
-	}
-	command := strings.Join(fs.Args(), " ")
-
-	_ = cfgPath
-	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
-	if sandboxMode != "" {
-		rt.SandboxMode = sandboxMode
-	}
-	workdir = resolveWorkdir(workdir)
-	roots := append([]string{}, workdir)
-	roots = append(roots, []string(addDirs)...)
-	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
-	out, code, err := runner.RunCommand(context.Background(), workdir, command)
-	if err != nil {
-		log.Fatalf("sandboxed command failed (exit %d): %v", code, err)
-	}
-	fmt.Print(out)
-}
-
-func execpolicyMain(root rootArgs, args []string) {
-	fs := flag.NewFlagSet("execpolicy", flag.ExitOnError)
-	var sandboxMode string
-	var approvalPolicy string
-	fs.StringVar(&sandboxMode, "sandbox", "", "Sandbox mode to evaluate (read-only|workspace-write|danger-full-access)")
-	fs.StringVar(&approvalPolicy, "approval", "", "Approval policy (never|on-request|untrusted|auto-deny)")
-	if err := fs.Parse(args); err != nil {
-		log.Fatalf("parse execpolicy args: %v", err)
-	}
-	rt := applyRuntimeKVOverrides(defaultRuntimeConfig(), prependOverrides(root.overrides, nil))
-	if sandboxMode == "" {
-		sandboxMode = rt.SandboxMode
-	}
-	if approvalPolicy == "" {
-		approvalPolicy = rt.ApprovalPolicy
-	}
-	pol := policy.Policy{SandboxMode: sandboxMode, ApprovalPolicy: approvalPolicy}
-	cmd := pol.AllowCommand()
-	write := pol.AllowWrite()
-	fmt.Printf("command allowed=%t approval_required=%t reason=%s\n", cmd.Allowed, cmd.RequiresApproval, cmd.Reason)
-	fmt.Printf("file_change allowed=%t approval_required=%t reason=%s\n", write.Allowed, write.RequiresApproval, write.Reason)
 }
 
 func mcpMain(root rootArgs, args []string) {

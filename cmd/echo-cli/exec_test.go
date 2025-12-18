@@ -6,20 +6,22 @@ import (
 	"echo-cli/internal/tools"
 )
 
-func TestToolEventToJSONApproval(t *testing.T) {
+func TestToolEventToJSONItem(t *testing.T) {
 	ev := tools.ToolEvent{
-		Type: "approval.requested",
+		Type: "item.completed",
 		Result: tools.ToolResult{
-			ID:   "1",
-			Kind: tools.ToolCommand,
+			ID:      "1",
+			Kind:    tools.ToolCommand,
+			Status:  "completed",
+			Output:  "ok",
+			Command: "echo ok",
 		},
-		Reason: "requires approval",
 	}
 	jsonEvt, ok := toolEventToJSON(ev)
 	if !ok {
 		t.Fatalf("expected conversion")
 	}
-	if jsonEvt.Approval == nil || jsonEvt.Approval.Action != "command" || jsonEvt.Approval.Status != "requested" {
-		t.Fatalf("unexpected approval event %+v", jsonEvt.Approval)
+	if jsonEvt.Item == nil || jsonEvt.Item.Type != string(tools.ToolCommand) || jsonEvt.Item.Status != "completed" {
+		t.Fatalf("unexpected item event %+v", jsonEvt.Item)
 	}
 }

@@ -35,7 +35,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
   - `ANTHROPIC_AUTH_TOKEN`（認証トークン）
 - 設定ファイル: `~/.echo/config.toml`（`--config <path>` で上書き可能）には次の 2 つのみ:
   - `url = "..."` と `token = "..."`
-- それ以外の実行設定（sandbox/approval/language/timeout 等）は CLI フラグまたは `-c key=value` で指定し、設定ファイルには保存しません。
+- それ以外の実行設定（language/timeout 等）は CLI フラグまたは `-c key=value` で指定し、設定ファイルには保存しません。
 
 ## CLI（M1+）
 
@@ -45,7 +45,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--prompt "<text>"`: 初期ユーザーメッセージ（位置引数としても利用可能）。
 - `ping`: 設定された Anthropic 互換エンドポイントに対して疎通確認を行い、返答テキストを出力。
 - `exec <prompt>`: 非対話の JSONL 実行。`--session <id>` / `--resume-last` によるセッション永続化をサポート。
-- 承認/サンドボックス: `sandbox_mode` と `approval_policy` に従います（read-only は書き込み/コマンドをブロック、on-request/untrusted は確認を促します）。
+- ツール実行は全自動です（sandbox/approval なし）。
 
 ## AGENTS.md ブートストラップ
 
@@ -57,15 +57,14 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `cmd/echo-cli`: CLI エントリ。
 - `internal/config`: エンドポイント設定の読み込み（url/token）。
 - `internal/agent`: エージェントループとモデル抽象化（Anthropic 互換クライアントとストリーミング）。
-- `internal/tui`: Bubble Tea UI（トランスクリプト、入力欄、ステータスバー、@ 検索、スラッシュコマンド、承認、セッションピッカー）。
-- `internal/policy`: サンドボックス/承認制御。
-- `internal/tools`: シェルとパッチのヘルパー（サンドボックスの配管はスタブ）。
+- `internal/tui`: Bubble Tea UI（トランスクリプト、入力欄、ステータスバー、@ 検索、スラッシュコマンド、セッションピッカー）。
+- `internal/tools`: シェルとパッチのヘルパー（直接実行）。
 - `internal/search`: `@` ピッカー用のファイル検索。
 - `internal/instructions`: システムプロンプト向けの `AGENTS.md` 検出。
 - `internal/session`: exec/TUI のセッション保存と復元。
 
 ## ロードマップ
 
-- M2: サンドボックス化されたコマンドツール、apply_patch、ファイル検索ピッカー、スラッシュコマンドのオーバーレイ（基本版は実装済み）。
+- M2: コマンドツール、apply_patch、ファイル検索ピッカー、スラッシュコマンドのオーバーレイ（基本版は実装済み）。
 - M3: さらに充実した exec モード（JSONL 同等）、セッションピッカー、AGENTS.md の検出（基本サポート済み）。
-- M4: MCP クライアント/サーバー、通知、ZDR、execpolicy。
+- M4: MCP クライアント/サーバー、通知、ZDR。

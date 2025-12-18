@@ -544,7 +544,6 @@ func runeLenBefore(text string, byteIdx int) int {
 func builtinItems(opts Options) []Item {
 	commands := []Item{
 		{Kind: ItemBuiltin, Command: CommandModel, Description: "切换模型"},
-		{Kind: ItemBuiltin, Command: CommandApprovals, Description: "配置审批策略"},
 	}
 	if opts.SkillsAvailable {
 		commands = append(commands, Item{Kind: ItemBuiltin, Command: CommandSkills, Description: "查看可用技能"})
@@ -568,7 +567,6 @@ func builtinItems(opts Options) []Item {
 	if opts.Debug {
 		commands = append(commands,
 			Item{Kind: ItemBuiltin, Command: CommandRollout, Description: "调试：切换分流", DebugOnly: true},
-			Item{Kind: ItemBuiltin, Command: CommandTestApproval, Description: "调试：审批测试", DebugOnly: true},
 		)
 	}
 	// 兼容历史命令
@@ -577,7 +575,6 @@ func builtinItems(opts Options) []Item {
 		Item{Kind: ItemBuiltin, Command: CommandRun, Description: "执行本地命令"},
 		Item{Kind: ItemBuiltin, Command: CommandApply, Description: "应用补丁文件"},
 		Item{Kind: ItemBuiltin, Command: CommandAttach, Description: "附加文件内容"},
-		Item{Kind: ItemBuiltin, Command: CommandAddDir, Description: "添加工作区路径"},
 		Item{Kind: ItemBuiltin, Command: CommandSessions, Description: "列出会话"},
 	)
 	return commands

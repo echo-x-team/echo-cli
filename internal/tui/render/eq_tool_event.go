@@ -23,7 +23,7 @@ func (toolEventRenderer) Handle(ctx *Context, evt events.Event) {
 		return
 	}
 	switch toolEv.Type {
-	case "approval.requested", "approval.completed", "item.started", "item.completed":
+	case "item.started", "item.updated", "item.completed":
 	default:
 		return
 	}

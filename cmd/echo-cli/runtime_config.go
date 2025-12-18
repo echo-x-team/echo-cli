@@ -9,8 +9,6 @@ import (
 
 type runtimeConfig struct {
 	Model              string
-	SandboxMode        string
-	ApprovalPolicy     string
 	DefaultLanguage    string
 	ReasoningEffort    string
 	RequestTimeoutSecs int
@@ -20,8 +18,6 @@ type runtimeConfig struct {
 func defaultRuntimeConfig() runtimeConfig {
 	return runtimeConfig{
 		Model:              "claude-3-5-sonnet-20240620",
-		SandboxMode:        "read-only",
-		ApprovalPolicy:     "on-request",
 		DefaultLanguage:    i18n.DefaultLanguage.Code(),
 		ReasoningEffort:    "",
 		RequestTimeoutSecs: 120,
@@ -40,10 +36,6 @@ func applyRuntimeKVOverrides(cfg runtimeConfig, overrides []string) runtimeConfi
 		switch key {
 		case "model":
 			cfg.Model = val
-		case "sandbox_mode", "sandbox":
-			cfg.SandboxMode = val
-		case "approval_policy", "ask_for_approval", "ask-for-approval":
-			cfg.ApprovalPolicy = val
 		case "reasoning_effort", "reasoning-effort":
 			cfg.ReasoningEffort = val
 		case "default_language", "language":

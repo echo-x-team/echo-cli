@@ -13,7 +13,7 @@ import (
 	"github.com/creack/pty"
 )
 
-// RunCommand executes a shell command in the given directory. Sandbox hooks can be wired here.
+// RunCommand executes a shell command in the given directory (no sandbox/approvals).
 func RunCommand(ctx context.Context, workdir string, command string) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("empty command")

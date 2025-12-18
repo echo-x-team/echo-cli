@@ -17,13 +17,10 @@ import (
 	"echo-cli/internal/i18n"
 	"echo-cli/internal/instructions"
 	"echo-cli/internal/logger"
-	"echo-cli/internal/policy"
 	"echo-cli/internal/repl"
-	"echo-cli/internal/sandbox"
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
 	"echo-cli/internal/tools/dispatcher"
-	toolengine "echo-cli/internal/tools/engine"
 	"github.com/google/uuid"
 )
 
@@ -77,12 +74,6 @@ func main() {
 		case "apply":
 			applyMain(root, rest[1:])
 			return
-		case "sandbox":
-			sandboxMain(root, rest[1:])
-			return
-		case "execpolicy":
-			execpolicyMain(root, rest[1:])
-			return
 		case "mcp":
 			mcpMain(root, rest[1:])
 			return
@@ -131,22 +122,6 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 	rt := defaultRuntimeConfig()
 	if strings.TrimSpace(cli.modelOverride) != "" {
 		rt.Model = strings.TrimSpace(cli.modelOverride)
-	}
-	if cli.sandboxMode != "" {
-		rt.SandboxMode = cli.sandboxMode
-	}
-	if cli.fullAuto {
-		rt.SandboxMode = "workspace-write"
-		if strings.TrimSpace(rt.ApprovalPolicy) == "" {
-			rt.ApprovalPolicy = "on-request"
-		}
-	}
-	if cli.dangerouslyBypass {
-		rt.SandboxMode = "danger-full-access"
-		rt.ApprovalPolicy = "never"
-	}
-	if cli.askApproval != "" {
-		rt.ApprovalPolicy = cli.askApproval
 	}
 	rt = applyRuntimeKVOverrides(rt, []string(cli.configOverrides))
 	if strings.TrimSpace(rt.DefaultLanguage) == "" {
@@ -198,12 +173,8 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 			defer closer.Close()
 		}
 	}
-	pol := policy.Policy{SandboxMode: rt.SandboxMode, ApprovalPolicy: rt.ApprovalPolicy}
-	roots := append([]string{}, workdir)
-	roots = append(roots, []string(cli.addDirs)...)
-	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
-	approver := toolengine.NewUIApprover()
-	disp := dispatcher.New(pol, runner, bus, workdir, approver)
+	runner := tools.DirectRunner{}
+	disp := dispatcher.New(runner, bus, workdir)
 	disp.Start(context.Background())
 
 	manager := events.NewManager(events.ManagerConfig{})
@@ -239,16 +210,12 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		Gateway:         gateway,
 		Model:           rt.Model,
 		Reasoning:       rt.ReasoningEffort,
-		Sandbox:         rt.SandboxMode,
 		Workdir:         workdir,
 		InitialPrompt:   cli.prompt,
 		Language:        rt.DefaultLanguage,
 		InitialMessages: attachments,
-		Policy:          pol,
 		Events:          bus,
 		Runner:          runner,
-		Approver:        approver,
-		Roots:           roots,
 		ResumePicker:    cli.resumePicker,
 		ResumeShowAll:   cli.resumeShowAll,
 		ResumeSessions:  resumeIDs,

@@ -5,28 +5,24 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"echo-cli/internal/policy"
 )
 
-// Runtime 协调路由、审批与并行控制。
+// Runtime 协调路由与并行控制。
 type Runtime struct {
 	registry     *Registry
 	orchestrator *Orchestrator
 	workdir      string
-	policy       policy.Policy
 	runner       Runner
 	lock         sync.RWMutex
 }
 
-func NewRuntime(pol policy.Policy, runner Runner, approver Approver, workdir string, handlers []Handler) *Runtime {
+func NewRuntime(runner Runner, workdir string, handlers []Handler) *Runtime {
 	registry := NewRegistry(handlers...)
 
 	return &Runtime{
 		registry:     registry,
-		orchestrator: NewOrchestrator(pol, approver),
+		orchestrator: NewOrchestrator(),
 		workdir:      workdir,
-		policy:       pol,
 		runner:       runner,
 	}
 }
@@ -37,18 +33,17 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	if ok {
 		kind = handler.Kind()
 	}
-	logToolRequest(call, kind, ok, r.policy, r.workdir)
+	logToolRequest(call, kind, ok, r.workdir)
 	if !ok {
 		res := ToolResult{ID: call.ID, Status: "error", Error: "unknown tool", Kind: ToolKind("unknown")}
 		emit(ToolEvent{Type: "item.completed", Result: res})
-		logToolResult(call, kind, res, r.policy, r.workdir)
+		logToolResult(call, kind, res, r.workdir)
 		return res, fmt.Errorf("unknown tool: %s", call.Name)
 	}
 
 	inv := Invocation{
 		Call:    call,
 		Workdir: r.workdir,
-		Policy:  r.policy,
 		Runner:  r.runner,
 	}
 
@@ -61,11 +56,11 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	}
 
 	result := r.orchestrator.Run(ctx, inv, handler, emit)
-	logToolResult(call, kind, result, r.policy, r.workdir)
+	logToolResult(call, kind, result, r.workdir)
 	return result, nil
 }
 
-func logToolRequest(call ToolCall, kind ToolKind, recognized bool, pol policy.Policy, workdir string) {
+func logToolRequest(call ToolCall, kind ToolKind, recognized bool, workdir string) {
 	ensureToolsLogger()
 
 	status := "received"
@@ -80,11 +75,11 @@ func logToolRequest(call ToolCall, kind ToolKind, recognized bool, pol policy.Po
 	if strings.TrimSpace(wd) == "" {
 		wd = "."
 	}
-	toolsLog.Infof("tool_call id=%s name=%s kind=%s status=%s sandbox=%s approval=%s workdir=%s payload=%s",
-		call.ID, call.Name, kind, status, pol.SandboxMode, pol.ApprovalPolicy, wd, payload)
+	toolsLog.Infof("tool_call id=%s name=%s kind=%s status=%s workdir=%s payload=%s",
+		call.ID, call.Name, kind, status, wd, payload)
 }
 
-func logToolResult(call ToolCall, kind ToolKind, result ToolResult, pol policy.Policy, workdir string) {
+func logToolResult(call ToolCall, kind ToolKind, result ToolResult, workdir string) {
 	ensureToolsLogger()
 
 	payload := "(empty)"
@@ -99,8 +94,8 @@ func logToolResult(call ToolCall, kind ToolKind, result ToolResult, pol policy.P
 	if strings.TrimSpace(errText) == "" {
 		errText = "(empty)"
 	}
-	toolsLog.Infof("tool_result id=%s name=%s kind=%s status=%s sandbox=%s approval=%s workdir=%s exit_code=%d error=%s payload=%s",
-		call.ID, call.Name, kind, result.Status, pol.SandboxMode, pol.ApprovalPolicy, wd, result.ExitCode, errText, payload)
+	toolsLog.Infof("tool_result id=%s name=%s kind=%s status=%s workdir=%s exit_code=%d error=%s payload=%s",
+		call.ID, call.Name, kind, result.Status, wd, result.ExitCode, errText, payload)
 }
 
 func sanitizeForLog(raw []byte) string {

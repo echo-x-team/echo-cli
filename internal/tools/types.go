@@ -52,12 +52,6 @@ type ToolResult struct {
 }
 
 type ToolEvent struct {
-	Type   string // approval.requested|approval.completed|item.started|item.updated|item.completed
+	Type   string // item.started|item.updated|item.completed
 	Result ToolResult
-	Reason string
-}
-
-// Approver 用于异步审批（UI/策略）。
-type Approver interface {
-	Approve(call ToolCall) bool
 }

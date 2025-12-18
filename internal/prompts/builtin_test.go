@@ -11,7 +11,6 @@ func TestBuiltinPromptsLoaded(t *testing.T) {
 		PromptLanguage,
 		PromptGPT5Echo,
 		PromptReview,
-		PromptSandboxAssessment,
 		PromptIssueLabeler,
 	}
 	for _, name := range checks {

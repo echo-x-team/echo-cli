@@ -16,9 +16,7 @@ import (
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
 	"echo-cli/internal/instructions"
-	"echo-cli/internal/policy"
 	"echo-cli/internal/repl"
-	"echo-cli/internal/sandbox"
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
 	"echo-cli/internal/tools/dispatcher"
@@ -28,13 +26,12 @@ import (
 )
 
 type jsonEvent struct {
-	Type      string         `json:"type"`
-	ThreadID  string         `json:"thread_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	Item      *eventItem     `json:"item,omitempty"`
-	Usage     *usage         `json:"usage,omitempty"`
-	Error     *eventError    `json:"error,omitempty"`
-	Approval  *approvalEvent `json:"approval,omitempty"`
+	Type      string      `json:"type"`
+	ThreadID  string      `json:"thread_id,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+	Item      *eventItem  `json:"item,omitempty"`
+	Usage     *usage      `json:"usage,omitempty"`
+	Error     *eventError `json:"error,omitempty"`
 }
 
 type eventItem struct {
@@ -46,13 +43,6 @@ type eventItem struct {
 	Path     string `json:"path,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Kind     string `json:"kind,omitempty"`
-}
-
-type approvalEvent struct {
-	ID     string `json:"id"`
-	Action string `json:"action"`
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
 }
 
 type eventError struct {
@@ -81,7 +71,6 @@ func execMain(root rootArgs, args []string) {
 	var cfgPath string
 	var modelOverride string
 	var providerOverride string
-	var addDirs stringSlice
 	var attachPaths stringSlice
 	var imagePaths csvSlice
 	var configOverrides stringSlice
@@ -89,13 +78,6 @@ func execMain(root rootArgs, args []string) {
 	var sessionID string
 	var resumeLast bool
 	var listSessions bool
-	var autoApprove bool
-	var autoDeny bool
-	var approvalMode string
-	var askApproval string
-	var sandboxMode string
-	var fullAuto bool
-	var dangerouslyBypass bool
 	var runCmd string
 	var applyPatch string
 	var reasoningOverride string
@@ -117,7 +99,6 @@ func execMain(root rootArgs, args []string) {
 	fs.StringVar(&providerOverride, "provider", "", "Model provider override")
 	fs.StringVar(&workdir, "cd", "", "Working directory to display")
 	fs.StringVar(&workdir, "C", "", "Alias for --cd")
-	fs.Var(&addDirs, "add-dir", "Additional allowed workspace root (repeatable)")
 	fs.Var(&attachPaths, "attach", "Attach a file into initial context (repeatable)")
 	fs.Var(&imagePaths, "image", "Attach an image into initial context (repeatable)")
 	fs.Var(&configOverrides, "c", "Override config value key=value (repeatable)")
@@ -126,14 +107,6 @@ func execMain(root rootArgs, args []string) {
 	fs.StringVar(&sessionID, "session", "", "Session id to resume")
 	fs.BoolVar(&resumeLast, "resume-last", false, "Resume most recent session")
 	fs.BoolVar(&listSessions, "list-sessions", false, "List saved session ids and exit")
-	fs.BoolVar(&autoApprove, "auto-approve", false, "Treat approval policy as never (auto approve)")
-	fs.BoolVar(&autoDeny, "auto-deny", false, "Treat approval policy as untrusted (auto deny privileged actions)")
-	fs.StringVar(&approvalMode, "approval-mode", "", "Override approval policy (never|on-request|untrusted|auto-deny)")
-	fs.StringVar(&askApproval, "ask-for-approval", "", "Configure when approvals are required (never|on-request|untrusted|auto-deny)")
-	fs.StringVar(&sandboxMode, "sandbox", "", "Sandbox mode (read-only|workspace-write|danger-full-access)")
-	fs.BoolVar(&fullAuto, "full-auto", false, "Enable sandboxed automatic execution (-a on-request, --sandbox workspace-write)")
-	fs.BoolVar(&dangerouslyBypass, "dangerously-bypass-approvals-and-sandbox", false, "Disable approvals and sandbox (use only in external sandboxes)")
-	fs.BoolVar(&dangerouslyBypass, "yolo", false, "Alias for --dangerously-bypass-approvals-and-sandbox")
 	fs.StringVar(&runCmd, "run", "", "Optional command to run after reply (emits command events)")
 	fs.StringVar(&applyPatch, "apply-patch", "", "Optional unified diff file to apply after reply (emits file change events)")
 	fs.StringVar(&configProfile, "profile", "", "Config profile to use")
@@ -203,31 +176,6 @@ func execMain(root rootArgs, args []string) {
 	if retriesOverride > 0 {
 		rt.Retries = retriesOverride
 	}
-	if sandboxMode != "" {
-		rt.SandboxMode = sandboxMode
-	}
-	if fullAuto {
-		rt.SandboxMode = "workspace-write"
-		if strings.TrimSpace(rt.ApprovalPolicy) == "" {
-			rt.ApprovalPolicy = "on-request"
-		}
-	}
-	if dangerouslyBypass {
-		rt.SandboxMode = "danger-full-access"
-		rt.ApprovalPolicy = "never"
-	}
-	if askApproval != "" {
-		rt.ApprovalPolicy = askApproval
-	}
-	if autoApprove {
-		rt.ApprovalPolicy = "never"
-	}
-	if autoDeny {
-		rt.ApprovalPolicy = "untrusted"
-	}
-	if approvalMode != "" {
-		rt.ApprovalPolicy = approvalMode
-	}
 	rt = applyRuntimeKVOverrides(rt, []string(configOverrides))
 	if strings.TrimSpace(providerOverride) != "" {
 		log.Warnf("provider override %q is ignored; echo-cli now configures only url/token", providerOverride)
@@ -243,7 +191,6 @@ func execMain(root rootArgs, args []string) {
 	}
 
 	workdir = resolveWorkdir(workdir)
-	pol := policy.Policy{SandboxMode: rt.SandboxMode, ApprovalPolicy: rt.ApprovalPolicy}
 	client := buildModelClient(endpoint, rt.Model, oss)
 	system := instructions.Discover(workdir)
 	outputSchemaContent := ""
@@ -258,14 +205,12 @@ func execMain(root rootArgs, args []string) {
 			outputSchemaContent = string(data)
 		}
 	}
-	roots := append([]string{}, workdir)
-	roots = append(roots, []string(addDirs)...)
-	runner := sandbox.NewRunner(rt.SandboxMode, roots...)
+	runner := tools.DirectRunner{}
 	bus := events.NewBus()
 	defer bus.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	disp := dispatcher.New(pol, runner, bus, workdir, nil)
+	disp := dispatcher.New(runner, bus, workdir)
 	disp.Start(ctx)
 
 	emit := func(ev jsonEvent) {
@@ -468,55 +413,27 @@ func execMain(root rootArgs, args []string) {
 
 	if runCmd != "" {
 		cmdID := "cmd_0"
-		dec := pol.AllowCommand()
-		if !dec.Allowed && !(dec.RequiresApproval && pol.ApprovalPolicy == "never") {
-			if dec.RequiresApproval {
-				emitEvent(jsonEvent{Type: "approval.requested", Approval: &approvalEvent{ID: cmdID, Action: "command", Status: "requested", Reason: dec.Reason}})
-				emitEvent(jsonEvent{Type: "approval.completed", Approval: &approvalEvent{ID: cmdID, Action: "command", Status: "denied", Reason: dec.Reason}})
-			}
-			emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "failed", Text: fmt.Sprintf("command blocked: %s", dec.Reason), Command: runCmd}})
+		emitEvent(jsonEvent{Type: "item.started", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "in_progress", Command: runCmd}})
+		out, code, err := runner.RunCommand(context.Background(), workdir, runCmd)
+		exitCode := code
+		if err != nil {
+			emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "failed", Text: err.Error(), Command: runCmd, ExitCode: &exitCode}})
 		} else {
-			if dec.RequiresApproval {
-				emitEvent(jsonEvent{Type: "approval.requested", Approval: &approvalEvent{ID: cmdID, Action: "command", Status: "requested"}})
-				emitEvent(jsonEvent{Type: "approval.completed", Approval: &approvalEvent{ID: cmdID, Action: "command", Status: "approved"}})
-			}
-			emitEvent(jsonEvent{Type: "item.started", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "in_progress", Command: runCmd}})
-			out, code, err := runner.RunCommand(context.Background(), workdir, runCmd)
-			if err != nil {
-				exitCode := code
-				emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "failed", Text: err.Error(), Command: runCmd, ExitCode: &exitCode}})
-			} else {
-				exitCode := code
-				emitEvent(jsonEvent{Type: "item.updated", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "completed", Text: out, Command: runCmd, ExitCode: &exitCode}})
-				emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "completed", Text: out, Command: runCmd, ExitCode: &exitCode}})
-			}
+			emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: cmdID, Type: "command_execution", Status: "completed", Text: out, Command: runCmd, ExitCode: &exitCode}})
 		}
 	}
 
 	if applyPatch != "" {
 		patchID := "patch_0"
-		dec := pol.AllowWrite()
-		if !dec.Allowed && !(dec.RequiresApproval && pol.ApprovalPolicy == "never") {
-			if dec.RequiresApproval {
-				emitEvent(jsonEvent{Type: "approval.requested", Approval: &approvalEvent{ID: patchID, Action: "file_change", Status: "requested", Reason: dec.Reason}})
-				emitEvent(jsonEvent{Type: "approval.completed", Approval: &approvalEvent{ID: patchID, Action: "file_change", Status: "denied", Reason: dec.Reason}})
-			}
-			emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "failed", Text: fmt.Sprintf("apply blocked: %s", dec.Reason), Path: applyPatch}})
+		data, err := os.ReadFile(applyPatch)
+		if err != nil {
+			emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "failed", Text: err.Error(), Path: applyPatch}})
 		} else {
-			if dec.RequiresApproval {
-				emitEvent(jsonEvent{Type: "approval.requested", Approval: &approvalEvent{ID: patchID, Action: "file_change", Status: "requested"}})
-				emitEvent(jsonEvent{Type: "approval.completed", Approval: &approvalEvent{ID: patchID, Action: "file_change", Status: "approved"}})
-			}
-			data, err := os.ReadFile(applyPatch)
-			if err != nil {
+			emitEvent(jsonEvent{Type: "item.started", Item: &eventItem{ID: patchID, Type: "file_change", Status: "in_progress", Path: applyPatch}})
+			if err := runner.ApplyPatch(context.Background(), workdir, string(data)); err != nil {
 				emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "failed", Text: err.Error(), Path: applyPatch}})
 			} else {
-				emitEvent(jsonEvent{Type: "item.started", Item: &eventItem{ID: patchID, Type: "file_change", Status: "in_progress", Path: applyPatch}})
-				if err := runner.ApplyPatch(context.Background(), workdir, string(data)); err != nil {
-					emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "failed", Text: err.Error(), Path: applyPatch}})
-				} else {
-					emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "completed", Path: applyPatch}})
-				}
+				emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: patchID, Type: "file_change", Status: "completed", Path: applyPatch}})
 			}
 		}
 	}
@@ -559,30 +476,6 @@ func forwardBusEvents(ch <-chan any, emit func(jsonEvent)) {
 
 func toolEventToJSON(ev tools.ToolEvent) (jsonEvent, bool) {
 	switch ev.Type {
-	case "approval.requested":
-		return jsonEvent{
-			Type: ev.Type,
-			Approval: &approvalEvent{
-				ID:     ev.Result.ID,
-				Action: actionForKind(ev.Result.Kind),
-				Status: "requested",
-				Reason: ev.Reason,
-			},
-		}, true
-	case "approval.completed":
-		status := "approved"
-		if strings.HasPrefix(ev.Reason, "denied") || strings.Contains(ev.Reason, "denied") {
-			status = "denied"
-		}
-		return jsonEvent{
-			Type: ev.Type,
-			Approval: &approvalEvent{
-				ID:     ev.Result.ID,
-				Action: actionForKind(ev.Result.Kind),
-				Status: status,
-				Reason: ev.Reason,
-			},
-		}, true
 	case "item.started", "item.updated", "item.completed":
 		text := ev.Result.Output
 		if text == "" {
@@ -665,10 +558,6 @@ func emitHuman(ev jsonEvent) {
 			if text != "" {
 				fmt.Fprintf(os.Stderr, "[%s] %s\n", ev.Item.Type, strings.TrimSpace(text))
 			}
-		}
-	case "approval.requested", "approval.completed":
-		if ev.Approval != nil {
-			fmt.Fprintf(os.Stderr, "%s %s (%s)\n", ev.Type, ev.Approval.Action, ev.Approval.Reason)
 		}
 	case "turn.failed":
 		if ev.Error != nil {

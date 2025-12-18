@@ -13,12 +13,10 @@ import (
 	"echo-cli/internal/execution"
 	"echo-cli/internal/i18n"
 	"echo-cli/internal/logger"
-	"echo-cli/internal/policy"
-	"echo-cli/internal/sandbox"
 	"echo-cli/internal/search"
 	"echo-cli/internal/session"
 	"echo-cli/internal/tools"
-	toolengine "echo-cli/internal/tools/engine"
+	"echo-cli/internal/tools/handlers"
 	tuirender "echo-cli/internal/tui/render"
 	"echo-cli/internal/tui/slash"
 
@@ -37,16 +35,12 @@ type Options struct {
 	Gateway         SubmissionGateway
 	Model           string
 	Reasoning       string
-	Sandbox         string
 	Workdir         string
 	InitialPrompt   string
 	Language        string
 	InitialMessages []agent.Message
-	Roots           []string
-	Policy          policy.Policy
 	Events          *events.Bus
-	Runner          sandbox.Runner
-	Approver        *toolengine.UIApprover
+	Runner          tools.Runner
 	ResumePicker    bool
 	ResumeShowAll   bool
 	ResumeSessions  []string
@@ -111,13 +105,10 @@ type Model struct {
 	streamCh                 chan streamEvent
 	modelName                string
 	reasoning                string
-	sandbox                  string
 	language                 string
 	workdir                  string
-	policy                   policy.Policy
-	runner                   sandbox.Runner
-	engine                   *toolengine.Engine
-	roots                    []string
+	runner                   tools.Runner
+	toolRuntime              *tools.Runtime
 	eventsSub                <-chan any
 	gateway                  SubmissionGateway
 	eqSub                    <-chan events.Event
@@ -127,10 +118,6 @@ type Model struct {
 	initSend                 string
 	searching                bool
 	mentionAt                int
-	approveText              string
-	approver                 *toolengine.UIApprover
-	pendingApprove           string
-	approveQueue             []approvalPrompt
 	queuedMessages           []string
 	pickingSession           bool
 	events                   []uiEvent
@@ -159,11 +146,6 @@ type streamEvent struct {
 type uiEvent struct {
 	Kind string
 	Text string
-}
-
-type approvalPrompt struct {
-	id   string
-	text string
 }
 
 func New(opts Options) *Model {
@@ -197,13 +179,9 @@ func New(opts Options) *Model {
 
 	runner := opts.Runner
 	if runner == nil {
-		roots := opts.Roots
-		if len(roots) == 0 && opts.Workdir != "" {
-			roots = []string{opts.Workdir}
-		}
-		runner = sandbox.NewRunner(opts.Sandbox, roots...)
+		runner = tools.DirectRunner{}
 	}
-	approver := opts.Approver
+	toolRuntime := tools.NewRuntime(runner, opts.Workdir, handlers.Default())
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
@@ -227,14 +205,10 @@ func New(opts Options) *Model {
 		eqRenderers:     tuirender.DefaultRenderers(),
 		modelName:       opts.Model,
 		reasoning:       opts.Reasoning,
-		sandbox:         opts.Sandbox,
 		language:        i18n.Normalize(opts.Language).Code(),
 		workdir:         opts.Workdir,
-		policy:          opts.Policy,
 		runner:          runner,
-		engine:          toolengine.New(opts.Policy, runner, approver, opts.Workdir),
-		roots:           opts.Roots,
-		approver:        approver,
+		toolRuntime:     toolRuntime,
 		initSend:        opts.InitialPrompt,
 		streamIdx:       -1,
 		mentionAt:       -1,
@@ -259,9 +233,6 @@ func New(opts Options) *Model {
 		}
 		m.messages = m.eqCtx.Transcript.Messages()
 		m.refreshTranscript()
-	}
-	if len(m.roots) == 0 && m.workdir != "" {
-		m.roots = []string{m.workdir}
 	}
 	if len(opts.InitialMessages) > 0 {
 		m.eqCtx.Transcript.LoadMessages(opts.InitialMessages)
@@ -407,17 +378,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.finish(cmds...)
 		}
-		if m.pendingApprove != "" {
-			switch msg.String() {
-			case "y", "Y", "enter":
-				m.resolveApproval(true)
-				return m.finish(cmds...)
-			case "n", "N", "esc", "ctrl+c":
-				m.resolveApproval(false)
-				return m.finish(cmds...)
-			}
-			return m.finish(cmds...)
-		}
 		if m.searching {
 			var cmd tea.Cmd
 			m.search, cmd = m.search.Update(msg)
@@ -552,12 +512,6 @@ func (m *Model) View() string {
 		overlay := modalStyle.Render(m.sessions.View())
 		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
 	}
-	if m.pendingApprove != "" {
-		overlay := modalStyle.Render(
-			fmt.Sprintf("Approval required: %s\n[y] approve • [n] cancel", m.approveText),
-		)
-		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
-	}
 	if m.slash != nil && m.slash.Open() {
 		width := m.width - 4
 		if width < 20 {
@@ -570,7 +524,7 @@ func (m *Model) View() string {
 		help := strings.Join([]string{
 			"快捷键",
 			"Enter 发送 • Ctrl+C 退出 • @ 搜索文件 • /sessions 恢复会话 • /run 执行命令 • /apply 应用补丁",
-			"? 切换帮助 • /add-dir 添加工作区 • /status 查看状态",
+			"? 切换帮助 • /status 查看状态",
 		}, "\n")
 		overlay := modalStyle.Render(help)
 		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
@@ -731,12 +685,6 @@ func (m *Model) handleBusEvent(evt any) tea.Cmd {
 	switch ev := evt.(type) {
 	case tools.ToolEvent:
 		switch ev.Type {
-		case "approval.requested":
-			text := approvalDescription(ev)
-			m.enqueueApproval(ev.Result.ID, text)
-			m.logEvent(ev.Type, text)
-		case "approval.completed":
-			m.logEvent(ev.Type, ev.Reason)
 		case "item.updated":
 			text := ev.Result.Output
 			if text == "" {
@@ -843,72 +791,6 @@ func (tuiPlanUpdatedRenderer) Type() events.EventType { return events.EventPlanU
 
 func (tuiPlanUpdatedRenderer) Handle(*tuirender.Context, events.Event) {}
 
-func approvalDescription(ev tools.ToolEvent) string {
-	switch ev.Result.Kind {
-	case tools.ToolCommand:
-		if ev.Result.Command != "" {
-			return fmt.Sprintf("command: %s", ev.Result.Command)
-		}
-		return "command execution"
-	case tools.ToolApplyPatch:
-		if ev.Result.Path != "" {
-			return fmt.Sprintf("apply patch: %s", ev.Result.Path)
-		}
-		return "apply patch"
-	case tools.ToolFileRead:
-		if ev.Result.Path != "" {
-			return fmt.Sprintf("read file: %s", ev.Result.Path)
-		}
-		return "read file"
-	case tools.ToolSearch:
-		return "search workspace"
-	default:
-		if ev.Reason != "" {
-			return ev.Reason
-		}
-		return "approval required"
-	}
-}
-
-func (m *Model) enqueueApproval(id, text string) {
-	if id == "" || m.approver == nil {
-		return
-	}
-	if id == m.pendingApprove {
-		return
-	}
-	for _, item := range m.approveQueue {
-		if item.id == id {
-			return
-		}
-	}
-	m.approveQueue = append(m.approveQueue, approvalPrompt{id: id, text: text})
-	if m.pendingApprove == "" {
-		m.advanceApproval()
-	}
-}
-
-func (m *Model) resolveApproval(allow bool) {
-	if m.pendingApprove != "" && m.approver != nil {
-		m.approver.Resolve(m.pendingApprove, allow)
-	}
-	m.pendingApprove = ""
-	m.approveText = ""
-	m.advanceApproval()
-}
-
-func (m *Model) advanceApproval() {
-	if len(m.approveQueue) == 0 {
-		m.pendingApprove = ""
-		m.approveText = ""
-		return
-	}
-	next := m.approveQueue[0]
-	m.approveQueue = m.approveQueue[1:]
-	m.pendingApprove = next.id
-	m.approveText = next.text
-}
-
 func (m *Model) enqueueQueued(text string) {
 	normalized := strings.TrimSpace(text)
 	if normalized == "" {
@@ -995,7 +877,7 @@ func (m *Model) syncSlashState() {
 		Value:        m.textarea.Value(),
 		CursorLine:   m.textarea.Line(),
 		CursorColumn: cursorCol,
-		Blocked:      m.searching || m.pendingApprove != "" || m.pickingSession,
+		Blocked:      m.searching || m.pickingSession,
 	})
 }
 
@@ -1289,9 +1171,6 @@ func (m *Model) statusLine(width int) string {
 	if len(m.queuedMessages) > 0 {
 		parts = append(parts, fmt.Sprintf("Queued:%d", len(m.queuedMessages)))
 	}
-	if m.pendingApprove != "" {
-		parts = append(parts, "Approval pending")
-	}
 	scrollLabel := "Scroll:PgUp/PgDn"
 	if m.viewport.ContentOverflow() {
 		scrollLabel = fmt.Sprintf("Scroll:%3d%%", m.viewport.PercentScrolled())
@@ -1308,21 +1187,6 @@ func (m *Model) statusLine(width int) string {
 		Padding(0, 1).
 		Width(maxInt(20, width)).
 		Render(strings.Join(parts, " • "))
-}
-
-func renderHeader(model, sandbox, workdir string, width int) string {
-	left := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("Echo")
-	info := []string{fmt.Sprintf("Model %s", model), fmt.Sprintf("Sandbox %s", sandbox)}
-	if workdir != "" {
-		info = append(info, workdir)
-	}
-	right := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D7A85")).Render(strings.Join(info, " • "))
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Width(maxInt(20, width)).
-		Render(lipgloss.JoinHorizontal(lipgloss.Top, left, lipgloss.NewStyle().PaddingLeft(2).Render(right)))
 }
 
 const (
@@ -1405,7 +1269,7 @@ func renderPane(title string, body string, width int, height int) string {
 func renderQuickHelp(width int) string {
 	help := []string{
 		"Quick actions:",
-		"/init 创建 AGENTS.md • /status 查看状态 • /approvals 设置审批策略",
+		"/init 创建 AGENTS.md • /status 查看状态",
 		"/model 选择模型 • /sessions 恢复会话 • @ 文件搜索",
 	}
 	return lipgloss.NewStyle().
@@ -1581,7 +1445,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		m.resetTranscriptMessages()
 		return nil
 	case slash.CommandStatus:
-		info := fmt.Sprintf("model=%s sandbox=%s dir=%s", m.modelName, m.sandbox, m.workdir)
+		info := fmt.Sprintf("model=%s dir=%s", m.modelName, m.workdir)
 		m.appendAssistantMessage(info)
 		return nil
 	case slash.CommandSessions:
@@ -1602,13 +1466,6 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		}
 		m.appendAssistantMessage(fmt.Sprintf("using model %s", m.modelName))
 		return nil
-	case slash.CommandApprovals:
-		if arg := firstArg(args); arg != "" {
-			m.policy.ApprovalPolicy = arg
-			m.engine = toolengine.New(m.policy, m.runner, m.approver, m.workdir)
-		}
-		m.appendAssistantMessage(fmt.Sprintf("approval policy=%s", m.policy.ApprovalPolicy))
-		return nil
 	case slash.CommandInit:
 		return m.handleInitCommand()
 	case slash.CommandResume:
@@ -1626,20 +1483,6 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 			Kind:    tools.ToolCommand,
 			Command: "git diff --stat",
 		})
-	case slash.CommandAddDir:
-		if args == "" {
-			m.appendAssistantMessage("usage: /add-dir <path>")
-			return nil
-		}
-		path := firstArg(args)
-		if !filepath.IsAbs(path) && m.workdir != "" {
-			path = filepath.Join(m.workdir, path)
-		}
-		m.roots = append(m.roots, path)
-		m.runner = sandbox.NewRunner(m.sandbox, m.roots...)
-		m.engine = toolengine.New(m.policy, m.runner, m.approver, m.workdir)
-		m.appendAssistantMessage(fmt.Sprintf("added workspace root: %s", path))
-		return nil
 	case slash.CommandRun:
 		if args == "" {
 			m.appendAssistantMessage("usage: /run <command>")
@@ -1723,7 +1566,7 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 	case slash.CommandSkills:
 		m.appendAssistantMessage("No skills metadata available.")
 		return nil
-	case slash.CommandRollout, slash.CommandTestApproval:
+	case slash.CommandRollout:
 		m.appendAssistantMessage("Debug-only command not supported in this build.")
 		return nil
 	}
@@ -1769,9 +1612,11 @@ func firstArg(args string) string {
 
 func (m *Model) runTool(req tools.ToolRequest) tea.Cmd {
 	return func() tea.Msg {
-		m.engine.Run(context.Background(), req, func(ev tools.ToolEvent) {
-			m.handleBusEvent(ev)
-		})
+		if m.toolRuntime != nil {
+			_, _ = m.toolRuntime.Dispatch(context.Background(), req.ToCall(), func(ev tools.ToolEvent) {
+				m.handleBusEvent(ev)
+			})
+		}
 		return nil
 	}
 }
@@ -1808,10 +1653,6 @@ func renderEvents(events []uiEvent, width int, height int) string {
 		tag := ev.Kind
 		prefix := "•"
 		switch ev.Kind {
-		case "approval.requested":
-			prefix = "?"
-		case "approval.completed":
-			prefix = "✓"
 		case "command_execution":
 			prefix = ">"
 		case "file_change":

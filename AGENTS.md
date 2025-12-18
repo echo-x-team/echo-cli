@@ -3,10 +3,9 @@
 ## 项目结构
 - `cmd/echo-cli`：CLI 入口（TUI、exec）。
 - `internal/agent`：模型客户端封装；统一负责工具注册（tools）与 Anthropic `tool_use/tool_result` 交互。
-- `internal/tools`：工具抽象与执行；`engine/` 负责审批与沙箱；`dispatcher/` 负责接收执行请求并产出工具事件。
+- `internal/tools`：工具抽象与执行（无审批/无沙箱）；`dispatcher/` 负责接收执行请求并产出工具事件。
 - `internal/tui`：Bubble Tea TUI（输入、对话、事件 pane、slash 命令）。
-- `internal/sandbox`：沙箱运行器（seatbelt/landlock 包装、路径校验）。
-- 其他：`instructions`（AGENTS 发现）、`config`、`policy`、`events`、`search`、`session`、`model/openai`。
+- 其他：`instructions`（AGENTS 发现）、`config`、`events`、`search`、`session`、`model/openai`。
 
 ## 构建与运行
 - `go test ./...`：运行全部测试。
@@ -16,8 +15,7 @@
 
 ## 代码风格
 - 使用 `gofmt`；Go 命名惯例（类型/函数 CamelCase，局部 mixedCaps）。
-- 事件命名对齐 exec JSONL：`item.*`、`approval.*`，工具类型 `command_execution`、`file_change`、`file_read`、`file_search`。
-- 沙箱运行器必须传入 workspace roots；不确定时宁可拒绝。
+- 事件命名对齐 exec JSONL：`item.*`，工具类型 `command_execution`、`file_change`、`file_read`、`file_search`。
 - 日志统一使用 `logger` 模块，禁止引入其他日志实现，保持系统风格一致。
 
 ## 测试规范
@@ -31,8 +29,8 @@
 - 关联 issue；TUI 改动附截图/录屏。
 
 ## Agent 提示
-- 默认尊重沙箱（read-only/workspace-write），勿随意放宽。
-- 新增工具务必发出 `approval.requested/approval.completed/item.*` 事件，并贯通 TUI/exec。
+- 本项目不启用沙箱与审批：工具调用一律全自动直接执行。
+- 新增工具务必发出 `item.*` 事件，并贯通 TUI/exec。
 - 不考虑前向兼容性：不要为了“未来可能的协议/接口”保留旧分支、旧结构或兼容层（例如 marker/文本解析、别名映射、双协议并行）。
 - 全局只保留一套实现方案：同一能力（尤其工具调用链路）必须收敛到单一路径；升级时直接替换并同步删除旧代码/旧测试/旧文档入口，保持架构精简。
 - 本文件若流程变更需同步更新。

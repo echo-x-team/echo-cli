@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"echo-cli/internal/logger"
-	"echo-cli/internal/policy"
 	"github.com/sirupsen/logrus"
 )
 
@@ -51,10 +50,9 @@ func TestToolsLogIncludesPayloadOnCallAndResult(t *testing.T) {
 		Name:    "command",
 		Payload: []byte("{\n  \"command\": \"echo hi\"\n}"),
 	}
-	pol := policy.Policy{SandboxMode: "workspace-write", ApprovalPolicy: "never"}
 
-	logToolRequest(call, ToolCommand, true, pol, "wd")
-	logToolResult(call, ToolCommand, ToolResult{ID: "1", Kind: ToolCommand, Status: "error", Error: "boom\nfail", ExitCode: 7}, pol, "wd")
+	logToolRequest(call, ToolCommand, true, "wd")
+	logToolResult(call, ToolCommand, ToolResult{ID: "1", Kind: ToolCommand, Status: "error", Error: "boom\nfail", ExitCode: 7}, "wd")
 
 	out := buf.String()
 	if !strings.Contains(out, "tool_call id=1 name=command") {

@@ -26,7 +26,7 @@ _echo_cli_completions()
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "exec completion resume review login logout apply sandbox execpolicy mcp mcp-server cloud responses-proxy stdio-to-uds features ping" -- "$cur") )
+        COMPREPLY=( $(compgen -W "exec completion resume review login logout apply mcp mcp-server cloud responses-proxy stdio-to-uds features ping" -- "$cur") )
         return 0
     fi
 
@@ -36,13 +36,13 @@ _echo_cli_completions()
             return 0
             ;;
         exec)
-            COMPREPLY=( $(compgen -W "--config --model --m --provider --cd --prompt --session --resume-last --list-sessions --auto-approve --auto-deny --approval-mode --ask-for-approval --sandbox --s --full-auto --dangerously-bypass-approvals-and-sandbox --yolo --run --apply-patch --add-dir --attach --image --timeout --retries --profile --oss --local-provider --output-schema --color --json --output-last-message --c --skip-git-repo-check" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--config --model --m --provider --cd --prompt --session --resume-last --list-sessions --run --apply-patch --attach --image --timeout --retries --profile --oss --local-provider --output-schema --color --json --output-last-message --c --skip-git-repo-check" -- "$cur") )
             ;;
         ping)
             COMPREPLY=( $(compgen -W "--config --provider --model --base-url --api-key --timeout --c" -- "$cur") )
             ;;
         *)
-            COMPREPLY=( $(compgen -W "--config --model --m --provider --reasoning-effort --cd --C --prompt --auto-approve --auto-deny --approval-mode --ask-for-approval --sandbox --s --full-auto --dangerously-bypass-approvals-and-sandbox --yolo --profile --oss --local-provider --search --add-dir --attach --image --c --timeout --retries" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--config --model --m --provider --reasoning-effort --cd --C --prompt --profile --oss --local-provider --search --attach --image --c --timeout --retries" -- "$cur") )
             ;;
     esac
 }
@@ -53,7 +53,7 @@ const zshCompletion = `
 #compdef echo-cli
 _echo_cli() {
     local -a subcmds
-    subcmds=('exec:run non-interactive exec mode' 'completion:print shell completions' 'resume:resume a saved session' 'review:run review (not yet implemented)' 'login:auth stub' 'logout:auth stub' 'apply:apply diff' 'sandbox:sandbox helpers' 'execpolicy:policy helpers' 'mcp:MCP helpers' 'mcp-server:MCP server' 'cloud:cloud tasks' 'responses-proxy:responses proxy' 'stdio-to-uds:stdio bridge' 'features:list feature flags' 'ping:ping model provider')
+    subcmds=('exec:run non-interactive exec mode' 'completion:print shell completions' 'resume:resume a saved session' 'review:run review (not yet implemented)' 'login:auth stub' 'logout:auth stub' 'apply:apply diff' 'mcp:MCP helpers' 'mcp-server:MCP server' 'cloud:cloud tasks' 'responses-proxy:responses proxy' 'stdio-to-uds:stdio bridge' 'features:list feature flags' 'ping:ping model provider')
     if (( CURRENT == 2 )); then
         _describe 'command' subcmds
         return
@@ -74,14 +74,6 @@ _echo_cli() {
                 '--session[Session id to resume]' \
                 '--resume-last[Resume most recent session]' \
                 '--list-sessions[List saved session ids]' \
-                '--auto-approve[Auto approve approvals]' \
-                '--auto-deny[Auto deny privileged actions]' \
-                '--approval-mode[Override approval policy]' \
-                '--ask-for-approval[When to request approval]' \
-                '--sandbox[Sandbox mode]' \
-                '--full-auto[Enable sandboxed automatic execution]' \
-                '--dangerously-bypass-approvals-and-sandbox[Disable sandbox and approvals]' \
-                '--yolo[Alias for dangerously bypass flags]' \
                 '--run[Command to run after reply]' \
                 '--apply-patch[Patch file to apply]' \
                 '--profile[Config profile]' \
@@ -91,7 +83,6 @@ _echo_cli() {
                 '--color[Color output]' \
                 '--json[Emit JSON events]' \
                 '--output-last-message[Write last message to a file]' \
-                '--add-dir[Additional workspace root]' \
                 '--attach[Attach a file into context]' \
                 '--image[Attach an image into context]' \
                 '--c[Config key=value override]' \
@@ -119,20 +110,10 @@ _echo_cli() {
                 '--cd[Working directory to display]' \
                 '--C[Alias for --cd]' \
                 '--prompt[Initial prompt]' \
-                '--auto-approve[Auto approve approvals]' \
-                '--auto-deny[Auto deny privileged actions]' \
-                '--approval-mode[Override approval policy]' \
-                '--ask-for-approval[When to request approval]' \
-                '--sandbox[Sandbox mode]' \
-                '--s[Alias for --sandbox]' \
-                '--full-auto[Enable sandboxed automatic execution]' \
-                '--dangerously-bypass-approvals-and-sandbox[Disable sandbox and approvals]' \
-                '--yolo[Alias for bypass flag]' \
                 '--profile[Config profile]' \
                 '--oss[Use OSS provider]' \
                 '--local-provider[Which OSS provider to use]' \
                 '--search[Enable web search]' \
-                '--add-dir[Additional workspace root]' \
                 '--attach[Attach a file into context]' \
                 '--image[Attach an image into context]' \
                 '--c[Config key=value override]' \

@@ -21,7 +21,6 @@ const (
 	PromptReview                   Name = "review"
 	PromptCompact                  Name = "compact"
 	PromptCompactSummaryPrefix     Name = "compact-summary-prefix"
-	PromptSandboxAssessment        Name = "sandbox-assessment"
 	PromptParallelInstructions     Name = "parallel-instructions"
 	PromptReviewHistoryCompleted   Name = "review-history-completed"
 	PromptReviewHistoryInterrupted Name = "review-history-interrupted"
@@ -41,7 +40,6 @@ var builtinFiles = map[Name]string{
 	PromptReview:                   "text/review_prompt.md",
 	PromptCompact:                  "text/compact_prompt.md",
 	PromptCompactSummaryPrefix:     "text/compact_summary_prefix.md",
-	PromptSandboxAssessment:        "text/sandbox_assessment_prompt.md",
 	PromptParallelInstructions:     "text/parallel_instructions.md",
 	PromptReviewHistoryCompleted:   "text/review_history_completed.md",
 	PromptReviewHistoryInterrupted: "text/review_history_interrupted.md",

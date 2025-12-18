@@ -19,14 +19,9 @@
 - 对简单任务（约最容易的 25%）可跳过计划；切勿给出单步骤计划。
 - 使用计划后，在完成已列出的子任务后要及时更新状态。
 
-## Echo CLI 沙箱与审批
+## 执行模式
 
-- `sandbox_mode`：`read-only`（只读）、`workspace-write`（工作区可写）、`danger-full-access`（无沙箱）。
-- `network_access`：`restricted` 需审批；`enabled` 无需审批。
-- `approval_policy`：`untrusted`|`on-failure`|`on-request`|`never`。`never` 模式下不得请求审批，需自行想办法完成；若与 `danger-full-access` 组合，应充分利用权限并在必要时自行补充验证。
-- `on-request` 且有沙箱时需请求审批的情形：写入受限目录、运行 GUI、沙箱下需要联网、关键命令因沙箱失败需升级、执行用户未要求的潜在破坏性动作（如 `rm`、`git reset`）。
-- `read-only` 下除读取外的操作都需审批。
-- 未告知配置时，默认 `workspace-write`、网络可用、审批 `on-failure`。
+本项目不使用沙箱或审批：工具调用一律全自动直接执行。
 
 ## 特殊用户请求
 

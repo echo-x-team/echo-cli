@@ -67,19 +67,18 @@ func TestFormatToolEventBlock_FileChangeShowsDiff(t *testing.T) {
 	}
 }
 
-func TestFormatToolEventBlock_FileChangeApprovalShowsDiff(t *testing.T) {
+func TestFormatToolEventBlock_FileChangeStartedShowsDiff(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\n"
 
 	got := FormatToolEventBlock(tools.ToolEvent{
-		Type: "approval.requested",
+		Type: "item.started",
 		Result: tools.ToolResult{
 			Kind: tools.ToolApplyPatch,
 			Path: "a.txt",
 			Diff: patch,
 		},
-		Reason: "needs approval",
 	})
-	if !strings.Contains(got, "approval required") || !strings.Contains(got, "diff:") || !strings.Contains(got, "+hello") {
-		t.Fatalf("expected approval diff in block, got:\n%s", got)
+	if !strings.Contains(got, "diff:") || !strings.Contains(got, "+hello") {
+		t.Fatalf("expected diff in block, got:\n%s", got)
 	}
 }

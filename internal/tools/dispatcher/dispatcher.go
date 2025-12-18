@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"echo-cli/internal/events"
-	"echo-cli/internal/policy"
-	"echo-cli/internal/sandbox"
 	"echo-cli/internal/tools"
 	"echo-cli/internal/tools/handlers"
 )
@@ -15,9 +13,9 @@ type Dispatcher struct {
 	bus     *events.Bus
 }
 
-func New(pol policy.Policy, runner sandbox.Runner, bus *events.Bus, workdir string, approver tools.Approver) *Dispatcher {
+func New(runner tools.Runner, bus *events.Bus, workdir string) *Dispatcher {
 	return &Dispatcher{
-		runtime: tools.NewRuntime(pol, runner, approver, workdir, handlers.Default()),
+		runtime: tools.NewRuntime(runner, workdir, handlers.Default()),
 		bus:     bus,
 	}
 }

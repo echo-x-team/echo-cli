@@ -869,16 +869,6 @@ func (e *Engine) collectToolResults(ctx context.Context, calls []tools.ToolCall,
 			if _, ok := pending[ev.Result.ID]; !ok {
 				continue
 			}
-			if ev.Type == "approval.completed" && strings.Contains(ev.Reason, "denied") {
-				if ev.Result.Status == "" {
-					ev.Result.Status = "error"
-				}
-				if ev.Result.Error == "" {
-					ev.Result.Error = ev.Reason
-				}
-				results[ev.Result.ID] = ev.Result
-				continue
-			}
 			if ev.Type != "item.completed" {
 				continue
 			}
