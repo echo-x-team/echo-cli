@@ -244,13 +244,23 @@ func (t *Transcript) Messages() []agent.Message {
 	return append([]agent.Message{}, t.history...)
 }
 
+// ViewMessages returns a copy of the full transcript view (including tool blocks).
+// This is useful for persisting/debugging the full UI-visible timeline without
+// polluting the model conversation history (Messages()).
+func (t *Transcript) ViewMessages() []agent.Message {
+	if t == nil {
+		return nil
+	}
+	return append([]agent.Message{}, t.view...)
+}
+
 // LoadMessages replaces transcript content with provided messages.
 // Used by UIs to hydrate from persisted session state.
 func (t *Transcript) LoadMessages(msgs []agent.Message) {
 	if t == nil {
 		return
 	}
-	t.history = append([]agent.Message{}, msgs...)
+	t.history = filterConversationMessages(msgs)
 	t.view = append([]agent.Message{}, msgs...)
 	t.lastRender = nil
 }
@@ -334,6 +344,20 @@ func (t *Transcript) RenderViewLines(width int) []Line {
 		width = t.width
 	}
 	return RenderMessages(t.view, width)
+}
+
+func filterConversationMessages(msgs []agent.Message) []agent.Message {
+	out := make([]agent.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		switch msg.Role {
+		case agent.RoleUser, agent.RoleAssistant, agent.RoleSystem:
+			out = append(out, msg)
+		default:
+			// Exclude non-standard roles (e.g. role="tool") from model-facing history.
+			continue
+		}
+	}
+	return out
 }
 
 func (t *Transcript) renderDelta() []string {

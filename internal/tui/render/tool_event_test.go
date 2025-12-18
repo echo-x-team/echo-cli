@@ -82,3 +82,35 @@ func TestFormatToolEventBlock_FileChangeStartedShowsDiff(t *testing.T) {
 		t.Fatalf("expected diff in block, got:\n%s", got)
 	}
 }
+
+func TestTranscript_LoadMessages_FiltersToolFromHistoryButKeepsInView(t *testing.T) {
+	tr := NewTranscript(60)
+	msgs := []agent.Message{
+		{Role: agent.RoleUser, Content: "hi"},
+		{Role: agent.Role("tool"), Content: "✓ command_execution completed\n  └ output:\n    ok"},
+		{Role: agent.RoleAssistant, Content: "done"},
+	}
+	tr.LoadMessages(msgs)
+
+	history := tr.Messages()
+	if len(history) != 2 {
+		t.Fatalf("expected 2 persisted conversation messages, got %d: %#v", len(history), history)
+	}
+	if history[0].Role != agent.RoleUser {
+		t.Fatalf("expected history[0] role=user, got %#v", history[0])
+	}
+	if history[1].Role != agent.RoleAssistant {
+		t.Fatalf("expected history[1] role=assistant, got %#v", history[1])
+	}
+
+	view := tr.ViewMessages()
+	if len(view) != 3 {
+		t.Fatalf("expected 3 view messages, got %d: %#v", len(view), view)
+	}
+
+	viewLines := LinesToPlainStrings(tr.RenderViewLines(80))
+	viewText := strings.Join(viewLines, "\n")
+	if !strings.Contains(viewText, "command_execution") {
+		t.Fatalf("expected tool block in view, got:\n%s", viewText)
+	}
+}

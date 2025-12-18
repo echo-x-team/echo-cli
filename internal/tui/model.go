@@ -645,6 +645,9 @@ func (m *Model) planSection(width int) string {
 
 // History returns a copy of the chat history.
 func (m *Model) History() []agent.Message {
+	if m.eqCtx.Transcript != nil {
+		return m.eqCtx.Transcript.ViewMessages()
+	}
 	return append([]agent.Message{}, m.messages...)
 }
 

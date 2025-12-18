@@ -203,7 +203,8 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		seedSessionID = uuid.NewString()
 	}
 	if seedSessionID != "" && len(seedMessages) > 0 {
-		engine.SeedHistory(seedSessionID, seedMessages)
+		// 会话文件可能包含 role="tool" 的 UI 调试块；喂给模型前必须过滤。
+		engine.SeedHistory(seedSessionID, extractConversationHistory(seedMessages))
 	}
 
 	attachments := append([]agent.Message{}, seedMessages...)
@@ -287,6 +288,9 @@ func (u usageSummary) total() int64 {
 func estimateUsage(history []agent.Message) usageSummary {
 	var u usageSummary
 	for _, msg := range history {
+		if msg.Role != agent.RoleUser && msg.Role != agent.RoleAssistant {
+			continue
+		}
 		tokens := int64(len(strings.Fields(msg.Content)))
 		if msg.Role == agent.RoleAssistant {
 			u.OutputTokens += tokens

@@ -88,6 +88,11 @@ func imageAttachmentMessages(paths []string, workdir string) []events.InputMessa
 func extractConversationHistory(messages []agent.Message) []agent.Message {
 	var filtered []agent.Message
 	for _, msg := range messages {
+		// 过滤 UI 可见但不应喂给模型的角色（例如 tool block）。
+		// Anthropic/OpenAI 消息角色通常仅支持 system/user/assistant。
+		if msg.Role != agent.RoleSystem && msg.Role != agent.RoleUser && msg.Role != agent.RoleAssistant {
+			continue
+		}
 		// 跳过系统注入的内容
 		if msg.Role == agent.RoleSystem {
 			// 跳过输出格式定义
