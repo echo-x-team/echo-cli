@@ -85,12 +85,12 @@ func (ExecCommandHandler) Handle(ctx context.Context, inv tools.Invocation) (too
 			if err == nil {
 				err = fmt.Errorf("command exited with code %d", toolRes.ExitCode)
 			}
-			toolRes.Error = err.Error()
+			toolRes.Error = enrichCommandError(err, toolRes.ExitCode, toolRes.Output)
 		}
 	}
 	if err != nil && toolRes.Error == "" {
 		toolRes.Status = "error"
-		toolRes.Error = err.Error()
+		toolRes.Error = enrichCommandError(err, toolRes.ExitCode, toolRes.Output)
 	}
 	return toolRes, err
 }
@@ -100,4 +100,23 @@ func chooseWorkdir(invWorkdir, override string) string {
 		return override
 	}
 	return invWorkdir
+}
+
+func enrichCommandError(err error, exitCode int, output string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	out := strings.ToLower(output)
+	if exitCode == 127 {
+		// 常见：Node/Vite 项目未安装 node_modules，导致脚本里的 vite 找不到。
+		if strings.Contains(out, "vite: not found") || strings.Contains(out, "vite: command not found") {
+			return msg + "（可能未安装依赖：先在项目目录运行 `npm install`/`pnpm install`/`yarn` 再重试）"
+		}
+		// Generic guidance for command-not-found scenarios.
+		if strings.Contains(out, "not found") || strings.Contains(out, "command not found") {
+			return msg + "（命令未找到：请确认已安装依赖/工具并且 PATH 正确）"
+		}
+	}
+	return msg
 }

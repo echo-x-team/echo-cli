@@ -75,13 +75,13 @@ func DefaultTools() []ToolSpec {
 		},
 		{
 			Name:        "apply_patch",
-			Description: "应用补丁（支持 unified diff 或 Echo Patch 格式）。Echo Patch 需要以 \"*** Begin Patch\" 开头、以 \"*** End Patch\" 结束，并且仅允许使用 \"*** Add File:\" / \"*** Update File:\" / \"*** Delete File:\"（可选 \"*** Move to:\" 重命名；\"*** End of File\" 可用于标注文件结束）。新增文件内容每行必须以 \"+\" 开头。",
+			Description: "应用补丁（支持 unified diff 或 Echo Patch 格式）。Echo Patch 需要以 \"*** Begin Patch\" 开头、以 \"*** End Patch\" 结束，并且仅允许使用 \"*** Add File:\" / \"*** Update File:\" / \"*** Delete File:\"（可选 \"*** Move to:\" 重命名；\"*** End of File\" 可用于标注文件结束）。注意：\"*** Update File\" 的 hunk 需要使用 \"@@\" 分隔，每一行必须以前缀开头：空格=上下文，\"-\"=删除，\"+\"=新增；不要直接粘贴无前缀的文件内容。若要整文件替换，优先用 \"*** Delete File\" + \"*** Add File\"。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"patch": map[string]any{
 						"type":        "string",
-						"description": "补丁内容（unified diff 或 Echo Patch）。如果使用 Echo Patch，必须使用 *** Add File / *** Update File / *** Delete File 指令，不要使用 \"*** Create File\" 之类的变体。",
+						"description": "补丁内容（unified diff 或 Echo Patch）。如果使用 Echo Patch，必须使用 *** Add File / *** Update File / *** Delete File 指令，不要使用 \"*** Create File\" 之类的变体；\"*** Update File\" 的每一行必须以 \" \"/\"+\"/\"-\" 开头（配合 @@ hunk）。",
 					},
 				},
 				"required":             []string{"patch"},

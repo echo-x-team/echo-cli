@@ -29,8 +29,9 @@ type UnifiedExecManager struct {
 type unifiedExecSession struct {
 	id string
 
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	cancel context.CancelFunc
 
 	notify chan struct{}
 	done   chan struct{}
@@ -120,7 +121,11 @@ func (m *UnifiedExecManager) ExecCommand(ctx context.Context, spec ExecCommandSp
 		maxOut = defaultUnifiedExecMaxOutByte
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-lc", spec.Command)
+	// 注意：这里不能使用调用方的 ctx 作为进程生命周期的上下文。
+	// exec_command 需要返回可继续 write_stdin 的长期会话；调用方 ctx 会在工具调用结束后被取消，
+	// 这会导致进程被 CommandContext 自动 kill，进而出现后续 write_stdin 报 "signal: killed"。
+	procCtx, procCancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(procCtx, "bash", "-lc", spec.Command)
 	if strings.TrimSpace(spec.Workdir) != "" {
 		cmd.Dir = spec.Workdir
 	}
@@ -129,6 +134,7 @@ func (m *UnifiedExecManager) ExecCommand(ctx context.Context, spec ExecCommandSp
 	sess := &unifiedExecSession{
 		id:       uuid.NewString(),
 		cmd:      cmd,
+		cancel:   procCancel,
 		notify:   make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		lastUsed: time.Now(),
@@ -137,6 +143,7 @@ func (m *UnifiedExecManager) ExecCommand(ctx context.Context, spec ExecCommandSp
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
+		procCancel()
 		return ExecCommandResult{}, fmt.Errorf("start pty: %w", err)
 	}
 	sess.ptmx = ptmx
@@ -145,6 +152,7 @@ func (m *UnifiedExecManager) ExecCommand(ctx context.Context, spec ExecCommandSp
 	m.pruneSessionsLocked()
 	if len(m.sessions) >= maxUnifiedExecSessions {
 		m.mu.Unlock()
+		procCancel()
 		_ = ptmx.Close()
 		_ = cmd.Process.Kill()
 		return ExecCommandResult{}, fmt.Errorf("too many active exec sessions")
@@ -267,8 +275,14 @@ func (m *UnifiedExecManager) pruneSessionsLocked() {
 
 func (s *unifiedExecSession) close() {
 	s.once.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		if s.ptmx != nil {
 			_ = s.ptmx.Close()
+		}
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
 		}
 		close(s.done)
 	})
