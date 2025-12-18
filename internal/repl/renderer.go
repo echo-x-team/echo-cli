@@ -114,11 +114,28 @@ func defaultCellRenderers() []EventCellRenderer {
 	return []EventCellRenderer{
 		submissionAcceptedRenderer{},
 		agentOutputRenderer{},
+		taskSummaryRenderer{},
 		planUpdatedRenderer{},
 		toolEventRenderer{},
 		taskErrorRenderer{},
 		// task.started / task.completed are currently no-op in human output.
 	}
+}
+
+type taskSummaryRenderer struct{}
+
+func (taskSummaryRenderer) Type() events.EventType { return events.EventTaskSummary }
+
+func (taskSummaryRenderer) Handle(r *EQRenderer, evt events.Event) {
+	summary, ok := evt.Payload.(events.TaskSummary)
+	if !ok {
+		return
+	}
+	text := strings.TrimSpace(summary.Text)
+	if text == "" {
+		return
+	}
+	r.ScrollbackAppend(newAssistantCell(text))
 }
 
 type submissionAcceptedRenderer struct{}

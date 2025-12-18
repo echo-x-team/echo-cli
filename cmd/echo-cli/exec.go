@@ -325,6 +325,7 @@ func execMain(root rootArgs, args []string) {
 	}
 
 	itemID := "item_0"
+	summaryID := "summary_0"
 	emitEvent(jsonEvent{Type: "thread.started"})
 
 	engineEvents := gateway.Events()
@@ -367,6 +368,15 @@ func execMain(root rootArgs, args []string) {
 					emitEvent(jsonEvent{Type: "turn.started"})
 					emitEvent(jsonEvent{Type: "item.started", Item: &eventItem{ID: itemID, Type: "agent_message", Status: "in_progress"}})
 					turnStarted = true
+				}
+			case events.EventTaskSummary:
+				summary, ok := ev.Payload.(events.TaskSummary)
+				if !ok {
+					continue
+				}
+				text := strings.TrimSpace(summary.Text)
+				if text != "" {
+					emitEvent(jsonEvent{Type: "item.completed", Item: &eventItem{ID: summaryID, Type: "task_summary", Status: "completed", Text: text}})
 				}
 			case events.EventAgentOutput:
 				msg, ok := ev.Payload.(events.AgentOutput)

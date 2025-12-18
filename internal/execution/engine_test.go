@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,8 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 	}
 
 	var outputs []events.AgentOutput
+	var summary events.TaskSummary
+	seenSummary := false
 	done := false
 	deadline := time.After(2 * time.Second)
 	for !done {
@@ -53,6 +56,13 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 					t.Fatalf("unexpected payload type %#v", ev.Payload)
 				}
 				outputs = append(outputs, output)
+			case events.EventTaskSummary:
+				s, ok := ev.Payload.(events.TaskSummary)
+				if !ok {
+					t.Fatalf("unexpected summary payload type %#v", ev.Payload)
+				}
+				summary = s
+				seenSummary = true
 			case events.EventError:
 				t.Fatalf("unexpected error payload: %v", ev.Payload)
 			case events.EventTaskCompleted:
@@ -70,6 +80,15 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 	if strings.TrimSpace(last.Content) != "hello world" {
 		t.Fatalf("unexpected final content: %q", last.Content)
 	}
+	if !seenSummary {
+		t.Fatalf("expected task summary event")
+	}
+	if !strings.Contains(summary.Text, "【任务总结】") {
+		t.Fatalf("unexpected summary text: %q", summary.Text)
+	}
+	if summary.Status != "completed" {
+		t.Fatalf("expected summary status completed, got %+v", summary)
+	}
 
 	history := engine.History("sess-1")
 	if len(history) != 2 {
@@ -80,6 +99,58 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 	}
 	if history[1].Role != agent.RoleAssistant {
 		t.Fatalf("second history role mismatch: %s", history[1].Role)
+	}
+}
+
+func TestEngineEmitsSummaryOnFailure(t *testing.T) {
+	bus := events.NewBus()
+	manager := events.NewManager(events.ManagerConfig{SubmissionBuffer: 8, EventBuffer: 16, Workers: 1})
+	engine := NewEngine(Options{
+		Manager:  manager,
+		Client:   errorModelClient{err: errors.New("boom")},
+		Bus:      bus,
+		Defaults: SessionDefaults{Model: "gpt-test"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.Start(ctx)
+	defer engine.Close()
+
+	eventsCh := engine.Events()
+	subID, err := engine.SubmitUserInput(ctx, []events.InputMessage{{Role: "user", Content: "hi"}}, events.InputContext{SessionID: "sess-fail"})
+	if err != nil {
+		t.Fatalf("submit user input: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	seenSummary := false
+	seenCompleted := false
+	for !(seenSummary && seenCompleted) {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for failure summary events")
+		case ev := <-eventsCh:
+			if ev.SubmissionID != subID {
+				continue
+			}
+			switch ev.Type {
+			case events.EventTaskSummary:
+				s, ok := ev.Payload.(events.TaskSummary)
+				if !ok {
+					t.Fatalf("unexpected summary payload type %#v", ev.Payload)
+				}
+				seenSummary = true
+				if s.Status != "failed" {
+					t.Fatalf("expected failed summary status, got %+v", s)
+				}
+				if !strings.Contains(s.Text, "失败原因分析") {
+					t.Fatalf("expected failure analysis in summary text, got %q", s.Text)
+				}
+			case events.EventTaskCompleted:
+				seenCompleted = true
+			}
+		}
 	}
 }
 
@@ -700,4 +771,16 @@ func (c *recordingLanguageModelClient) Prompts() []agent.Prompt {
 	out := make([]agent.Prompt, len(c.prompts))
 	copy(out, c.prompts)
 	return out
+}
+
+type errorModelClient struct {
+	err error
+}
+
+func (c errorModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
+	return "", c.err
+}
+
+func (c errorModelClient) Stream(_ context.Context, _ agent.Prompt, _ func(agent.StreamEvent)) error {
+	return c.err
 }

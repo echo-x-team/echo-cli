@@ -9,6 +9,7 @@ func DefaultRenderers() map[events.EventType]EventRenderer {
 		taskStartedRenderer{},
 		agentOutputRenderer{},
 		toolEventRenderer{},
+		taskSummaryRenderer{},
 		taskTerminalRenderer{typ: events.EventTaskCompleted},
 		taskTerminalRenderer{typ: events.EventError},
 		planUpdatedRenderer{},

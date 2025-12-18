@@ -67,10 +67,12 @@ type EventType string
 const (
 	EventSubmissionAccepted EventType = "submission.accepted"
 	EventTaskStarted        EventType = "task.started"
-	EventTaskCompleted      EventType = "task.completed"
-	EventAgentOutput        EventType = "agent.output"
-	EventError              EventType = "task.error"
-	EventToolEvent          EventType = "tool.event"
+	// EventTaskSummary 在一次 run_task/turn 结束后发出，用于汇总本次任务执行情况（成功/失败/中断均会发出）。
+	EventTaskSummary   EventType = "task.summary"
+	EventTaskCompleted EventType = "task.completed"
+	EventAgentOutput   EventType = "agent.output"
+	EventError         EventType = "task.error"
+	EventToolEvent     EventType = "tool.event"
 	// EventPlanUpdated 表示 update_plan 工具成功后生成的新计划快照。
 	EventPlanUpdated EventType = "plan.updated"
 )
@@ -87,6 +89,22 @@ type AgentOutput struct {
 type TaskResult struct {
 	Status string
 	Error  string
+}
+
+// TaskSummary 描述一次任务（对用户而言的一次 turn）结束后的汇总信息。
+// Text 为面向用户的汇总文本；结构化字段用于 exec/TUI 做更丰富的渲染或后续扩展。
+type TaskSummary struct {
+	Status     string `json:"status"` // completed|failed|interrupted|timeout
+	Text       string `json:"text"`
+	Error      string `json:"error,omitempty"`
+	ExitStage  string `json:"exit_stage,omitempty"`
+	ExitReason string `json:"exit_reason,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Model      string `json:"model,omitempty"`
+
+	InputTokens       int64 `json:"input_tokens,omitempty"`
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+	OutputTokens      int64 `json:"output_tokens,omitempty"`
 }
 
 // Event 是 EQ 中传递的唯一消息格式。

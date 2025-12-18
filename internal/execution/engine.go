@@ -258,6 +258,9 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnCo
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
 // runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
 func (e *Engine) runTask(ctx context.Context, submission events.Submission, state TurnState, emit events.EventPublisher) error {
+	start := time.Now()
+	summaryAcc := newTaskSummaryAccumulator(start)
+
 	seq := 0
 	turnCtx := state.Context
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
@@ -269,6 +272,28 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	var exitErr error
 	exitFinalContent := ""
 	exitFinalItems := 0
+
+	defer func() {
+		// Always emit a turn/task summary event, even when the task fails or is interrupted.
+		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = emit.Publish(publishCtx, events.Event{
+			Type:         events.EventTaskSummary,
+			SubmissionID: submission.ID,
+			SessionID:    submission.SessionID,
+			Timestamp:    time.Now(),
+			Payload: summaryAcc.Build(
+				submission,
+				turnCtx,
+				exitReason,
+				exitStage,
+				exitFinalContent,
+				exitErr,
+			),
+			Metadata: submission.Metadata,
+		})
+	}()
+
 	defer func() {
 		fields := logger.Fields{
 			"session":      submission.SessionID,
@@ -302,10 +327,14 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			return err
 		}
 
-		turn, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedCalls)
+		turn, toolResults, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedCalls)
 		if err != nil {
 			exitErr = err
 			exitStage = "run_turn"
+			var se stageError
+			if errors.As(err, &se) && strings.TrimSpace(se.Stage) != "" {
+				exitStage = se.Stage
+			}
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				exitReason = "context_done"
 			} else {
@@ -313,6 +342,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			}
 			return err
 		}
+		summaryAcc.ObserveToolResults(toolResults)
 		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
 
 		if e.tokenLimitReached() {
@@ -344,13 +374,13 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 }
 
 // runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
-func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, error) {
+func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, []tools.ToolResult, error) {
 	prompt := turnCtx.BuildPrompt()
 	logPrompt(submission, prompt)
 
 	output, err := e.runModelInteraction(ctx, submission, prompt, emit, seq)
 	if err != nil {
-		return turnResult{}, err
+		return turnResult{}, nil, stageError{Stage: "model_interaction", Err: err}
 	}
 
 	processed := e.identifyTools(output)
@@ -364,7 +394,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 			"tool_ids":   collectToolCallIDs(output.toolCalls),
 			"tool_count": len(output.toolCalls),
 		})
-		return turnResult{}, err
+		return turnResult{}, nil, stageError{Stage: "tool_execution", Err: err}
 	}
 	for _, res := range results {
 		e.logToolResultError(submission, turnCtx, *seq, res)
@@ -378,7 +408,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 		responses:     responses,
 		itemsToRecord: itemsToRecord,
 		finalContent:  deriveFinalContent(output.fullResponse, itemsToRecord),
-	}, nil
+	}, results, nil
 }
 
 // runModelInteraction 负责模型流式交互与输出收集，仅处理「模型交互」层。
