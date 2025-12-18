@@ -216,6 +216,9 @@ func formatCommandSummary(res tools.ToolResult) string {
 	if cmd == "" {
 		cmd = "<unknown>"
 	}
+	if strings.TrimSpace(res.SessionID) != "" {
+		return fmt.Sprintf("`%s` 运行中（session=%s）", cmd, strings.TrimSpace(res.SessionID))
+	}
 	if res.Status == "error" || strings.TrimSpace(res.Error) != "" || res.ExitCode != 0 {
 		return fmt.Sprintf("`%s`（exit=%d）失败：%s", cmd, res.ExitCode, truncateOneLine(res.Error, 160))
 	}

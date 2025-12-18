@@ -56,6 +56,7 @@ type Options struct {
 // SubmissionGateway 抽象 REPL 层提交/订阅能力，避免 TUI 与实现耦合。
 type SubmissionGateway interface {
 	SubmitUserInput(ctx context.Context, items []events.InputMessage, inputCtx events.InputContext) (string, error)
+	SubmitApprovalDecision(ctx context.Context, sessionID string, approvalID string, approved bool) (string, error)
 	Events() <-chan events.Event
 }
 
@@ -184,7 +185,11 @@ func New(opts Options) *Model {
 	if runner == nil {
 		runner = tools.DirectRunner{}
 	}
-	toolRuntime := tools.NewRuntime(runner, opts.Workdir, handlers.Default())
+	toolRuntime := tools.NewRuntime(tools.RuntimeOptions{
+		Runner:   runner,
+		Workdir:  opts.Workdir,
+		Handlers: handlers.Default(),
+	})
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
@@ -1528,6 +1533,40 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		info := fmt.Sprintf("model=%s dir=%s", m.modelName, m.workdir)
 		m.appendAssistantMessage(info)
 		return nil
+	case slash.CommandApprove, slash.CommandDeny:
+		if args == "" {
+			m.appendAssistantMessage("usage: /approve <approval_id>  (or /deny <approval_id>)")
+			return nil
+		}
+		if m.gateway == nil {
+			m.appendAssistantMessage("gateway not configured; cannot submit approval decision.")
+			return nil
+		}
+		approvalID := firstArg(args)
+		if approvalID == "" {
+			m.appendAssistantMessage("missing approval_id")
+			return nil
+		}
+		sessionID := m.eqCtx.SessionID
+		if strings.TrimSpace(sessionID) == "" {
+			sessionID = m.resumeSessionID
+		}
+		if strings.TrimSpace(sessionID) == "" {
+			m.appendAssistantMessage("session id not set; cannot submit approval decision.")
+			return nil
+		}
+		approved := cmd == slash.CommandApprove
+		action := "deny"
+		if approved {
+			action = "approve"
+		}
+		m.appendAssistantMessage(fmt.Sprintf("submitted %s for %s", action, approvalID))
+		return func() tea.Msg {
+			if _, err := m.gateway.SubmitApprovalDecision(context.Background(), sessionID, approvalID, approved); err != nil {
+				return systemMsg{Text: fmt.Sprintf("submit approval decision failed: %v", err)}
+			}
+			return nil
+		}
 	case slash.CommandSessions:
 		ids, err := session.ListIDs()
 		if err != nil {

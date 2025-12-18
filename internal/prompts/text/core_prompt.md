@@ -124,7 +124,9 @@
 
 - 搜索文本/文件优先 `rg`/`rg --files`（若不可用再换）。
 - 读取文件时每段最多 250 行；不要用脚本绕过限制。命令输出超过 10KB 或 256 行会被截断。
-- 生成 `command` 工具命令时必须尽量无人值守：优先使用 `--yes/-y/--non-interactive`、显式参数、或 `CI=1` 等方式避免出现“需要手工确认/选择”的交互提示。
+- 生成 `command` 工具命令时必须严格“无交互/无人值守”：凡可能出现确认/选择/向导/编辑器/分页器的命令，一律使用 `--yes/-y/--non-interactive/--force`、显式参数或 `CI=1` 等方式避免阻塞。
+- npm/npx 推荐写法（按优先级）：`npx --yes <pkg>@<ver> ...` → `npm_config_yes=true CI=1 npm ...` →（兜底，不推荐，可能误答所有提示）`printf 'y\\n' | <cmd>` / `yes | <cmd>`。
+- 例（Vue 项目脚手架必须无提示）：`npx --yes create-vue@latest ai-customer-service-website -- --typescript --router --pinia --eslint`（或 `npm_config_yes=true CI=1 npm create vue@latest ai-customer-service-website -- --typescript --router --pinia --eslint`）。
 
 ## `update_plan`
 

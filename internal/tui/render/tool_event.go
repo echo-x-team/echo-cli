@@ -27,7 +27,35 @@ func FormatToolEventBlock(ev tools.ToolEvent) string {
 	case "item.completed":
 		return toolCompletedBlock(ev.Result)
 	case "item.updated":
+		return toolUpdatedBlock(ev.Result)
+	default:
 		return ""
+	}
+}
+
+func toolUpdatedBlock(res tools.ToolResult) string {
+	switch strings.ToLower(strings.TrimSpace(res.Status)) {
+	case "requires_approval":
+		var sb strings.Builder
+		sb.WriteString("⚠ approval required")
+		if strings.TrimSpace(res.Command) != "" {
+			sb.WriteString("\n  └ command: " + strings.TrimSpace(res.Command))
+		}
+		if strings.TrimSpace(res.ApprovalID) != "" {
+			sb.WriteString("\n  └ approval_id: " + strings.TrimSpace(res.ApprovalID))
+		}
+		if strings.TrimSpace(res.ApprovalReason) != "" {
+			sb.WriteString("\n  └ reason: " + strings.TrimSpace(res.ApprovalReason))
+		}
+		if strings.TrimSpace(res.ApprovalID) != "" {
+			sb.WriteString("\n  └ action: /approve " + strings.TrimSpace(res.ApprovalID) + "  (or /deny " + strings.TrimSpace(res.ApprovalID) + ")")
+		}
+		return sb.String()
+	case "approved":
+		if strings.TrimSpace(res.ApprovalID) == "" {
+			return "✓ approved"
+		}
+		return "✓ approved " + strings.TrimSpace(res.ApprovalID)
 	default:
 		return ""
 	}
@@ -36,6 +64,9 @@ func FormatToolEventBlock(ev tools.ToolEvent) string {
 func toolStartLine(res tools.ToolResult) (prefix string, detail string) {
 	switch res.Kind {
 	case tools.ToolCommand:
+		if strings.TrimSpace(res.Command) == "write_stdin" && strings.TrimSpace(res.SessionID) != "" {
+			return "> running", fmt.Sprintf("write_stdin (session=%s)", strings.TrimSpace(res.SessionID))
+		}
 		return "> running", strings.TrimSpace(res.Command)
 	case tools.ToolApplyPatch:
 		return "Δ applying", strings.TrimSpace(res.Path)
@@ -66,6 +97,9 @@ func toolCompletedBlock(res tools.ToolResult) string {
 	}
 	if strings.TrimSpace(res.Path) != "" {
 		sb.WriteString("\n  └ path: " + strings.TrimSpace(res.Path))
+	}
+	if strings.TrimSpace(res.SessionID) != "" {
+		sb.WriteString("\n  └ session_id: " + strings.TrimSpace(res.SessionID))
 	}
 	if res.ExitCode != 0 {
 		sb.WriteString(fmt.Sprintf("\n  └ exit_code: %d", res.ExitCode))

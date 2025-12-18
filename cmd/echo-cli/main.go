@@ -174,7 +174,10 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		}
 	}
 	runner := tools.DirectRunner{}
-	disp := dispatcher.New(runner, bus, workdir)
+	reviewer := tools.NewLLMCommandReviewer(client, rt.Model)
+	disp := dispatcher.New(runner, bus, workdir, dispatcher.Options{
+		Reviewer: reviewer,
+	})
 	disp.Start(context.Background())
 
 	manager := events.NewManager(events.ManagerConfig{})

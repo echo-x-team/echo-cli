@@ -492,6 +492,22 @@ func ResponseInputFromToolResult(result tools.ToolResult) ResponseInputItem {
 	if content == "" && len(result.Plan) > 0 {
 		content = formatPlanText(result.Plan, result.Explanation)
 	}
+	if result.Kind == tools.ToolCommand {
+		out := map[string]any{
+			"output": strings.TrimRight(content, "\n"),
+		}
+		if strings.TrimSpace(result.SessionID) != "" {
+			out["session_id"] = strings.TrimSpace(result.SessionID)
+		} else {
+			out["exit_code"] = result.ExitCode
+		}
+		if strings.TrimSpace(result.Error) != "" {
+			out["error"] = strings.TrimSpace(result.Error)
+		}
+		if data, err := json.Marshal(out); err == nil {
+			content = string(data)
+		}
+	}
 	payload := FunctionCallOutputPayload{Content: content, Success: &success}
 	return ResponseInputItem{
 		Type: ResponseInputTypeFunctionCallOutput,

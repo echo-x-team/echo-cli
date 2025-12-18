@@ -13,10 +13,19 @@ type Dispatcher struct {
 	bus     *events.Bus
 }
 
-func New(runner tools.Runner, bus *events.Bus, workdir string) *Dispatcher {
+type Options struct {
+	Reviewer tools.CommandReviewer
+}
+
+func New(runner tools.Runner, bus *events.Bus, workdir string, opts Options) *Dispatcher {
 	return &Dispatcher{
-		runtime: tools.NewRuntime(runner, workdir, handlers.Default()),
-		bus:     bus,
+		runtime: tools.NewRuntime(tools.RuntimeOptions{
+			Runner:   runner,
+			Workdir:  workdir,
+			Handlers: handlers.Default(),
+			Reviewer: opts.Reviewer,
+		}),
+		bus: bus,
 	}
 }
 
@@ -46,6 +55,10 @@ func (d *Dispatcher) Start(ctx context.Context) {
 					go d.runtime.Dispatch(callCtx, v.Call, func(ev tools.ToolEvent) {
 						d.bus.Publish(ev)
 					})
+				case tools.ApprovalDecision:
+					if d.runtime != nil {
+						d.runtime.ResolveApproval(v)
+					}
 				default:
 					continue
 				}

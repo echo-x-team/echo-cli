@@ -44,11 +44,18 @@ type ToolResult struct {
 	Diff     string
 	Error    string
 	ExitCode int
-	Path     string
-	Command  string
-	Plan     []PlanItem
+	// SessionID 用于 exec_command/write_stdin 这类持久会话工具。
+	SessionID string
+	Path      string
+	Command   string
+	Plan      []PlanItem
 	// Explanation 是 update_plan 的可选说明。
 	Explanation string
+
+	// ApprovalID 非空表示本次工具调用需要人工审批才能继续执行。
+	ApprovalID string
+	// ApprovalReason 为安全审查助手给出的简要原因，供前端展示与人工决策参考。
+	ApprovalReason string
 }
 
 type ToolEvent struct {

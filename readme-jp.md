@@ -45,7 +45,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--prompt "<text>"`: 初期ユーザーメッセージ（位置引数としても利用可能）。
 - `ping`: 設定された Anthropic 互換エンドポイントに対して疎通確認を行い、返答テキストを出力。
 - `exec <prompt>`: 非対話の JSONL 実行。`--session <id>` / `--resume-last` によるセッション永続化をサポート。
-- ツール実行は全自動です（sandbox/approval なし）。
+- ツール実行は基本的に自動ですが、危険なコマンドは LLM による審査のうえ人間の承認が必要です。
 
 ## AGENTS.md ブートストラップ
 

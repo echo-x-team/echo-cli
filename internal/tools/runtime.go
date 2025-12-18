@@ -13,17 +13,46 @@ type Runtime struct {
 	orchestrator *Orchestrator
 	workdir      string
 	runner       Runner
+	unifiedExec  *UnifiedExecManager
+	approvals    *ApprovalStore
 	lock         sync.RWMutex
 }
 
-func NewRuntime(runner Runner, workdir string, handlers []Handler) *Runtime {
-	registry := NewRegistry(handlers...)
+type RuntimeOptions struct {
+	Runner       Runner
+	Workdir      string
+	Handlers     []Handler
+	Orchestrator *Orchestrator
+	UnifiedExec  *UnifiedExecManager
+	Reviewer     CommandReviewer
+	Approvals    *ApprovalStore
+}
+
+func NewRuntime(opts RuntimeOptions) *Runtime {
+	registry := NewRegistry(opts.Handlers...)
+	approvals := opts.Approvals
+	if approvals == nil {
+		approvals = NewApprovalStore()
+	}
+	orchestrator := opts.Orchestrator
+	if orchestrator == nil {
+		orchestrator = NewOrchestratorWith(OrchestratorOptions{
+			Reviewer:  opts.Reviewer,
+			Approvals: approvals,
+		})
+	}
+	unifiedExec := opts.UnifiedExec
+	if unifiedExec == nil {
+		unifiedExec = NewUnifiedExecManager()
+	}
 
 	return &Runtime{
 		registry:     registry,
-		orchestrator: NewOrchestrator(),
-		workdir:      workdir,
-		runner:       runner,
+		orchestrator: orchestrator,
+		workdir:      opts.Workdir,
+		runner:       opts.Runner,
+		unifiedExec:  unifiedExec,
+		approvals:    approvals,
 	}
 }
 
@@ -42,9 +71,10 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	}
 
 	inv := Invocation{
-		Call:    call,
-		Workdir: r.workdir,
-		Runner:  r.runner,
+		Call:        call,
+		Workdir:     r.workdir,
+		Runner:      r.runner,
+		UnifiedExec: r.unifiedExec,
 	}
 
 	if handler.SupportsParallel() {
@@ -58,6 +88,13 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	result := r.orchestrator.Run(ctx, inv, handler, emit)
 	logToolResult(call, kind, result, r.workdir)
 	return result, nil
+}
+
+func (r *Runtime) ResolveApproval(decision ApprovalDecision) bool {
+	if r == nil || r.approvals == nil {
+		return false
+	}
+	return r.approvals.Resolve(decision)
 }
 
 func logToolRequest(call ToolCall, kind ToolKind, recognized bool, workdir string) {

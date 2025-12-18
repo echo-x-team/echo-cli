@@ -24,6 +24,8 @@ const (
 	CommandExit     Command = "exit"
 	CommandFeedback Command = "feedback"
 	CommandRollout  Command = "rollout"
+	CommandApprove  Command = "approve"
+	CommandDeny     Command = "deny"
 
 	// 兼容历史命令（未在 codex 枚举中，但现有 UI 已支持）。
 	CommandClear    Command = "clear"

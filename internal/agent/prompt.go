@@ -20,8 +20,8 @@ type Prompt struct {
 func DefaultTools() []ToolSpec {
 	return []ToolSpec{
 		{
-			Name:        "command",
-			Description: "在工作区执行 shell 命令，返回 stdout/stderr 与退出码。",
+			Name:        "exec_command",
+			Description: "在 PTY 会话中启动命令（Unified Exec），适用于交互式脚手架；返回 output，若进程仍在运行则返回 session_id。若出现交互提示/选择器，用 write_stdin 写入回车/选项驱动完成。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -29,8 +29,47 @@ func DefaultTools() []ToolSpec {
 						"type":        "string",
 						"description": "要执行的完整 shell 命令。",
 					},
+					"workdir": map[string]any{
+						"type":        "string",
+						"description": "可选：覆盖当前工作目录（默认使用会话工作目录）。",
+					},
+					"yield_time_ms": map[string]any{
+						"type":        "integer",
+						"description": "可选：最多等待输出的时间（毫秒），超时后返回当前输出与 session 状态。",
+					},
+					"max_output_bytes": map[string]any{
+						"type":        "integer",
+						"description": "可选：本次调用最多返回的输出字节数（用于避免超大输出）。",
+					},
 				},
 				"required":             []string{"command"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        "write_stdin",
+			Description: "向 Unified Exec 会话写入 stdin（可用于选择/回车/Ctrl+C 等），并返回最近 output；进程退出后会返回 exit_code 且不再返回 session_id。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "exec_command 返回的会话 id。",
+					},
+					"chars": map[string]any{
+						"type":        "string",
+						"description": "要写入 stdin 的字符（例如 \"\\n\" 回车，\"\\u0003\" 为 Ctrl+C）；可传空字符串用于轮询输出。",
+					},
+					"yield_time_ms": map[string]any{
+						"type":        "integer",
+						"description": "可选：最多等待输出的时间（毫秒）。",
+					},
+					"max_output_bytes": map[string]any{
+						"type":        "integer",
+						"description": "可选：本次调用最多返回的输出字节数。",
+					},
+				},
+				"required":             []string{"session_id", "chars"},
 				"additionalProperties": false,
 			},
 		},

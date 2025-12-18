@@ -24,6 +24,11 @@ func (g *stubGateway) SubmitUserInput(ctx context.Context, items []events.InputM
 	return "sub-id", nil
 }
 
+func (g *stubGateway) SubmitApprovalDecision(ctx context.Context, sessionID string, approvalID string, approved bool) (string, error) {
+	g.submissions++
+	return "sub-id", nil
+}
+
 func (g *stubGateway) Events() <-chan events.Event {
 	return nil
 }

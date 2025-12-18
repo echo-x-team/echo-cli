@@ -38,7 +38,12 @@ func (c toolEventCell) Render(width int) []tuirender.Line {
 
 	switch c.ev.Type {
 	case "item.updated":
-		// Keep REPL output low-noise; item.updated is mostly internal status today.
+		if lines := toolUpdatedLines(c.ev.Result); len(lines) > 0 {
+			for _, line := range lines {
+				out = append(out, tuirender.Line{Spans: []tuirender.Span{{Text: line, Style: dim}}})
+			}
+			return out
+		}
 		return nil
 	}
 
@@ -93,7 +98,11 @@ func toolStartSummary(res tools.ToolResult) (prefix string, detail string) {
 	switch res.Kind {
 	case tools.ToolCommand:
 		prefix = "> running"
-		detail = strings.TrimSpace(res.Command)
+		if strings.TrimSpace(res.Command) == "write_stdin" && strings.TrimSpace(res.SessionID) != "" {
+			detail = fmt.Sprintf("write_stdin (session=%s)", strings.TrimSpace(res.SessionID))
+		} else {
+			detail = strings.TrimSpace(res.Command)
+		}
 	case tools.ToolApplyPatch:
 		prefix = "Δ applying"
 		detail = strings.TrimSpace(res.Path)
@@ -119,6 +128,9 @@ func toolDetailsLines(res tools.ToolResult, width int) []string {
 	if strings.TrimSpace(res.Path) != "" {
 		out = append(out, "path: "+strings.TrimSpace(res.Path))
 	}
+	if strings.TrimSpace(res.SessionID) != "" {
+		out = append(out, "session_id: "+strings.TrimSpace(res.SessionID))
+	}
 	if res.ExitCode != 0 {
 		out = append(out, fmt.Sprintf("exit_code: %d", res.ExitCode))
 	}
@@ -130,6 +142,31 @@ func toolDetailsLines(res tools.ToolResult, width int) []string {
 		out = append(out, wrapAndTruncate(res.Output, width, maxToolOutputLines)...)
 	}
 	return out
+}
+
+func toolUpdatedLines(res tools.ToolResult) []string {
+	switch strings.ToLower(strings.TrimSpace(res.Status)) {
+	case "requires_approval":
+		out := []string{"⚠ approval required"}
+		if strings.TrimSpace(res.Command) != "" {
+			out = append(out, "command: "+strings.TrimSpace(res.Command))
+		}
+		if strings.TrimSpace(res.ApprovalID) != "" {
+			out = append(out, "approval_id: "+strings.TrimSpace(res.ApprovalID))
+			out = append(out, "action: /approve "+strings.TrimSpace(res.ApprovalID)+"  (or /deny "+strings.TrimSpace(res.ApprovalID)+")")
+		}
+		if strings.TrimSpace(res.ApprovalReason) != "" {
+			out = append(out, "reason: "+strings.TrimSpace(res.ApprovalReason))
+		}
+		return out
+	case "approved":
+		if strings.TrimSpace(res.ApprovalID) == "" {
+			return []string{"✓ approved"}
+		}
+		return []string{"✓ approved " + strings.TrimSpace(res.ApprovalID)}
+	default:
+		return nil
+	}
 }
 
 func wrapAndTruncate(text string, width int, maxLines int) []string {

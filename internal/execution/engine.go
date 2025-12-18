@@ -102,6 +102,7 @@ func NewEngine(opts Options) *Engine {
 func (e *Engine) Start(ctx context.Context) {
 	e.manager.RegisterHandler(events.OperationUserInput, events.HandlerFunc(e.handleUserInput))
 	e.manager.RegisterHandler(events.OperationInterrupt, events.HandlerFunc(e.handleInterrupt))
+	e.manager.RegisterHandler(events.OperationApprovalDecision, events.HandlerFunc(e.handleApprovalDecision))
 	e.manager.Start(ctx)
 	e.startToolForwarder(ctx)
 }
@@ -175,6 +176,24 @@ func (e *Engine) handleInterrupt(ctx context.Context, submission events.Submissi
 	if handle != nil && handle.cancel != nil {
 		handle.cancel()
 	}
+	return nil
+}
+
+func (e *Engine) handleApprovalDecision(ctx context.Context, submission events.Submission, _ events.EventPublisher) error {
+	if submission.Operation.ApprovalDecision == nil {
+		return errors.New("missing approval decision payload")
+	}
+	if e.bus == nil {
+		return errors.New("tool bus not configured")
+	}
+	dec := submission.Operation.ApprovalDecision
+	if strings.TrimSpace(dec.ApprovalID) == "" {
+		return errors.New("approval id required")
+	}
+	e.bus.Publish(tools.ApprovalDecision{
+		ApprovalID: strings.TrimSpace(dec.ApprovalID),
+		Approved:   dec.Approved,
+	})
 	return nil
 }
 

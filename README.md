@@ -11,7 +11,7 @@ echo-cli is a Go-based CLI/TUI client for Echo Team. It uses Bubble Tea for the 
 ## Current Status
 
 - Stage: **M2** (tool execution enabled).
-- Bubble Tea TUI and exec mode share the same session pipeline; tool execution is fully automatic (no sandbox/approvals).
+- Bubble Tea TUI and exec mode share the same session pipeline; safe commands run automatically, and dangerous commands require human approval (LLM-assisted review).
 
 ## Quickstart
 
@@ -45,7 +45,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--prompt "<text>"`: initial user message (also positional).
 - `ping`: ping configured Anthropic-compatible endpoint and print the returned text.
 - `exec <prompt>`: non-interactive JSONL run with session persistence; supports `--session <id>` / `--resume-last`.
-- Tool execution is fully automatic (no sandbox/approvals).
+- Tool execution is automatic for safe commands; dangerous commands require approval.
 
 ## AGENTS.md bootstrap
 

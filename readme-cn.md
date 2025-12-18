@@ -45,7 +45,7 @@ go run ./cmd/echo-cli exec --prompt "任务"
 - `--prompt "<text>"`：初始用户消息（亦可作为位置参数）。
 - `ping`：对配置的 Anthropic 兼容端点做连通性测试并打印返回文本。
 - `exec <prompt>`：非交互 JSONL 运行，支持 `--session <id>` / `--resume-last` 持久化会话。
-- 工具执行全自动进行（无沙箱/无审批）。
+- 工具执行默认全自动；危险命令会先由大模型做安全审查并要求前端人工审批。
 
 ## AGENTS.md 引导
 

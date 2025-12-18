@@ -37,7 +37,7 @@ func (r ToolRequest) effectiveName() string {
 	}
 	switch r.Kind {
 	case ToolCommand:
-		return "command"
+		return "exec_command"
 	case ToolApplyPatch:
 		return "apply_patch"
 	case ToolFileRead:

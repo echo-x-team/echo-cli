@@ -15,4 +15,6 @@ type Invocation struct {
 	Call    ToolCall
 	Workdir string
 	Runner  Runner
+
+	UnifiedExec *UnifiedExecManager
 }

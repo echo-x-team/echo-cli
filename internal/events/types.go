@@ -15,8 +15,9 @@ const (
 type OperationKind string
 
 const (
-	OperationUserInput OperationKind = "user_input"
-	OperationInterrupt OperationKind = "interrupt"
+	OperationUserInput        OperationKind = "user_input"
+	OperationInterrupt        OperationKind = "interrupt"
+	OperationApprovalDecision OperationKind = "approval_decision"
 )
 
 // InputMessage 代表一次用户输入（或上下文中的历史消息）。
@@ -45,10 +46,17 @@ type UserInputOperation struct {
 	Context InputContext
 }
 
+// ApprovalDecisionOperation 描述一次审批决策（approve/deny）。
+type ApprovalDecisionOperation struct {
+	ApprovalID string
+	Approved   bool
+}
+
 // Operation 描述一次提交的操作载荷。
 type Operation struct {
-	Kind      OperationKind
-	UserInput *UserInputOperation
+	Kind             OperationKind
+	UserInput        *UserInputOperation
+	ApprovalDecision *ApprovalDecisionOperation
 }
 
 // Submission 代表进入 SQ 的提交。

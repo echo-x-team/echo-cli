@@ -45,6 +45,24 @@ func (g *Gateway) SubmitInterrupt(ctx context.Context, sessionID string) (string
 	})
 }
 
+// SubmitApprovalDecision 投递审批结果到 SQ。
+func (g *Gateway) SubmitApprovalDecision(ctx context.Context, sessionID string, approvalID string, approved bool) (string, error) {
+	mgr, err := g.managerOrErr()
+	if err != nil {
+		return "", err
+	}
+	return mgr.Submit(ctx, events.Submission{
+		SessionID: sessionID,
+		Operation: events.Operation{
+			Kind: events.OperationApprovalDecision,
+			ApprovalDecision: &events.ApprovalDecisionOperation{
+				ApprovalID: approvalID,
+				Approved:   approved,
+			},
+		},
+	})
+}
+
 // Events 返回 EQ 事件订阅。
 func (g *Gateway) Events() <-chan events.Event {
 	if g.manager == nil {
