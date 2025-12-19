@@ -23,12 +23,22 @@ type Options struct {
 }
 
 type Client struct {
-	api   *anthropic.Client
-	model string
+	api       *anthropic.Client
+	model     string
+	newStream func(ctx context.Context, params anthropic.MessageNewParams) messageStream
 }
 
 var _ agent.ModelClient = (*Client)(nil)
 var streamLog = logger.Named("llm")
+var errEmptyStream = errors.New("llm stream empty response")
+
+const emptyStreamRetries = 5
+
+type messageStream interface {
+	Next() bool
+	Current() anthropic.MessageStreamEventUnion
+	Err() error
+}
 
 func New(opts Options) (*Client, error) {
 	token := strings.TrimSpace(opts.Token)
@@ -45,6 +55,9 @@ func New(opts Options) (*Client, error) {
 	return &Client{
 		api:   &client,
 		model: strings.TrimSpace(opts.Model),
+		newStream: func(ctx context.Context, params anthropic.MessageNewParams) messageStream {
+			return client.Messages.NewStreaming(ctx, params)
+		},
 	}, nil
 }
 
@@ -79,14 +92,41 @@ func (c *Client) Complete(ctx context.Context, prompt agent.Prompt) (string, err
 
 func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	params := buildMessageParams(prompt, c.resolveModel(prompt.Model))
-	stream := c.api.Messages.NewStreaming(ctx, params)
-	state := newToolUseStreamState()
 	model := string(c.resolveModel(prompt.Model))
+	for attempt := 0; ; attempt++ {
+		emitted, err := c.streamOnce(ctx, params, model, onEvent)
+		if err != nil {
+			return err
+		}
+		if emitted {
+			return nil
+		}
+		if attempt >= emptyStreamRetries {
+			return errEmptyStream
+		}
+		streamLog.WithFields(logger.Fields{
+			"model":   model,
+			"attempt": attempt + 1,
+			"max":     emptyStreamRetries + 1,
+		}).Warn("llm stream empty response retrying")
+	}
+}
+
+func (c *Client) streamOnce(ctx context.Context, params anthropic.MessageNewParams, model string, onEvent func(agent.StreamEvent)) (bool, error) {
+	var stream messageStream
+	if c.newStream != nil {
+		stream = c.newStream(ctx, params)
+	} else {
+		stream = c.api.Messages.NewStreaming(ctx, params)
+	}
+	state := newToolUseStreamState()
 	summary := streamSummary{}
 	logSummary := newStreamSummaryLogger(model, &summary)
 	rawCapture := newRawStreamCapture()
 	emittedText := false
 	emittedItem := false
+	streaming := false
+	buffered := make([]agent.StreamEvent, 0, 8)
 	wrappedOnEvent := func(evt agent.StreamEvent) {
 		switch evt.Type {
 		case agent.StreamEventTextDelta:
@@ -103,7 +143,18 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 			evt.StopSequence = summary.stopSequence
 			evt.FinishReason = resolveFinishReason(&summary)
 		}
-		onEvent(evt)
+		if streaming {
+			onEvent(evt)
+			return
+		}
+		buffered = append(buffered, evt)
+		if (evt.Type == agent.StreamEventTextDelta && evt.Text != "") || (evt.Type == agent.StreamEventItem && len(evt.Item) > 0) {
+			streaming = true
+			for _, queued := range buffered {
+				onEvent(queued)
+			}
+			buffered = nil
+		}
 	}
 
 	for stream.Next() {
@@ -185,18 +236,18 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 		if state.Handle(variant, wrappedOnEvent) {
 			logSummary(nil)
 			rawCapture.LogIfEmpty(model, emittedText, emittedItem)
-			return nil
+			return emittedText || emittedItem, nil
 		}
 	}
 	if err := stream.Err(); err != nil {
 		logSummary(err)
-		return err
+		return emittedText || emittedItem, err
 	}
 	state.Flush(wrappedOnEvent)
 	wrappedOnEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	logSummary(nil)
 	rawCapture.LogIfEmpty(model, emittedText, emittedItem)
-	return nil
+	return emittedText || emittedItem, nil
 }
 
 func buildMessageParams(prompt agent.Prompt, model anthropic.Model) anthropic.MessageNewParams {
