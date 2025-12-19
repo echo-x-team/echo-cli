@@ -1016,12 +1016,13 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
-	internalNetworkRetries := maxRetries
-	if internalNetworkRetries < 5 {
-		internalNetworkRetries = 5
+	recoveryRetries := maxRetries
+	if recoveryRetries < 5 {
+		recoveryRetries = 5
 	}
 	var lastErr error
 	for attempt := 0; ; attempt++ {
+		emitted := false
 		fields := logger.Fields{
 			"type":              "llm.request",
 			"session":           submission.SessionID,
@@ -1047,8 +1048,14 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 			switch evt.Type {
 			case agent.StreamEventTextDelta:
 				in.Debugf("llm->agent stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
+				if evt.Text != "" {
+					emitted = true
+				}
 			case agent.StreamEventItem:
 				in.Debugf("llm->agent stream chunk type=item len=%d payload=%s", len(evt.Item), prettyPayloadBytesForLog(evt.Item, 200))
+				if len(evt.Item) > 0 {
+					emitted = true
+				}
 			case agent.StreamEventUsage:
 				if evt.Usage != nil {
 					in.Debugf("llm->agent stream chunk type=usage input=%d output=%d cache_create=%d cache_read=%d", evt.Usage.InputTokens, evt.Usage.OutputTokens, evt.Usage.CacheCreationInputTokens, evt.Usage.CacheReadInputTokens)
@@ -1063,23 +1070,25 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 			onEvent(evt)
 		})
 		cancel()
+		if err == nil && !emitted {
+			err = errEmptyStream
+		}
 		if err == nil {
 			return nil
 		}
 		in.Errorf("llm->agent error attempt=%d model=%s err=%v", attempt+1, model, err)
 		lastErr = err
 
-		// Anthropic 偶发返回 api_error: "Internal Network Failure"。
-		// 该错误通常是临时网络抖动，至少重试 5 次可显著提升成功率。
+		retryReason, recoverable := streamRetryReason(err)
 		retryLimit := maxRetries
-		if isInternalNetworkFailure(err) {
-			retryLimit = internalNetworkRetries
+		if recoverable {
+			retryLimit = recoveryRetries
 		}
 		if attempt >= retryLimit {
 			break
 		}
-		if isInternalNetworkFailure(err) {
-			in.Warnf("llm->agent retrying after internal network failure sleep=%s attempt=%d model=%s", retryDelay, attempt+1, model)
+		if recoverable {
+			in.Warnf("llm->agent retrying after %s sleep=%s attempt=%d model=%s", retryReason, retryDelay, attempt+1, model)
 			timer := time.NewTimer(retryDelay)
 			select {
 			case <-ctx.Done():
@@ -1092,11 +1101,27 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 	return lastErr
 }
 
-func isInternalNetworkFailure(err error) bool {
+var errEmptyStream = errors.New("llm stream empty response")
+
+func streamRetryReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if errors.Is(err, errEmptyStream) {
+		return "empty_response", true
+	}
+	if isAPIError(err) {
+		return "api_error", true
+	}
+	return "", false
+}
+
+func isAPIError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "internal network failure")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "api_error") || strings.Contains(msg, "internal network failure")
 }
 
 func sanitizeLogText(text string) string {

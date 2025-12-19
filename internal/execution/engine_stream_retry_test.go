@@ -11,8 +11,9 @@ import (
 )
 
 type timedFlakyStreamClient struct {
-	errs      []error
-	callTimes []time.Time
+	errs           []error
+	emptyResponses []bool
+	callTimes      []time.Time
 }
 
 func (c *timedFlakyStreamClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
@@ -29,6 +30,9 @@ func (c *timedFlakyStreamClient) Stream(ctx context.Context, _ agent.Prompt, onE
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if callIndex < len(c.emptyResponses) && c.emptyResponses[callIndex] {
+		return nil
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: "ok"})
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
@@ -107,5 +111,50 @@ func TestStreamPromptDoesNotRetryWhenRetriesZeroAndErrorNotInternalNetworkFailur
 	}
 	if got := len(client.callTimes); got != 1 {
 		t.Fatalf("expected 1 stream attempt, got %d", got)
+	}
+}
+
+func TestStreamPromptRetriesAfterEmptyResponse(t *testing.T) {
+	client := &timedFlakyStreamClient{
+		emptyResponses: []bool{true, false},
+	}
+
+	engine := &Engine{
+		client:         client,
+		requestTimeout: time.Second,
+		retries:        0,
+		retryDelay:     20 * time.Millisecond,
+	}
+
+	prompt := agent.Prompt{Model: "gpt-test"}
+	if err := engine.streamPrompt(context.Background(), events.Submission{}, prompt, func(agent.StreamEvent) {}); err != nil {
+		t.Fatalf("streamPrompt failed: %v", err)
+	}
+	if got := len(client.callTimes); got != 2 {
+		t.Fatalf("expected 2 stream attempts, got %d", got)
+	}
+	if gap := client.callTimes[1].Sub(client.callTimes[0]); gap < engine.retryDelay {
+		t.Fatalf("expected retry delay >= %s, got %s", engine.retryDelay, gap)
+	}
+}
+
+func TestStreamPromptRetriesFiveTimesOnEmptyResponse(t *testing.T) {
+	client := &timedFlakyStreamClient{
+		emptyResponses: []bool{true, true, true, true, true, true},
+	}
+
+	engine := &Engine{
+		client:         client,
+		requestTimeout: time.Second,
+		retries:        0,
+		retryDelay:     5 * time.Millisecond,
+	}
+
+	prompt := agent.Prompt{Model: "gpt-test"}
+	if err := engine.streamPrompt(context.Background(), events.Submission{}, prompt, func(agent.StreamEvent) {}); err == nil {
+		t.Fatalf("expected error")
+	}
+	if got := len(client.callTimes); got != 6 {
+		t.Fatalf("expected 6 stream attempts, got %d", got)
 	}
 }

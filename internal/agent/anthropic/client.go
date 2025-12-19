@@ -30,9 +30,6 @@ type Client struct {
 
 var _ agent.ModelClient = (*Client)(nil)
 var streamLog = logger.Named("llm")
-var errEmptyStream = errors.New("llm stream empty response")
-
-const emptyStreamRetries = 5
 
 type messageStream interface {
 	Next() bool
@@ -93,26 +90,10 @@ func (c *Client) Complete(ctx context.Context, prompt agent.Prompt) (string, err
 func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	params := buildMessageParams(prompt, c.resolveModel(prompt.Model))
 	model := string(c.resolveModel(prompt.Model))
-	for attempt := 0; ; attempt++ {
-		emitted, err := c.streamOnce(ctx, params, model, onEvent)
-		if err != nil {
-			return err
-		}
-		if emitted {
-			return nil
-		}
-		if attempt >= emptyStreamRetries {
-			return errEmptyStream
-		}
-		streamLog.WithFields(logger.Fields{
-			"model":   model,
-			"attempt": attempt + 1,
-			"max":     emptyStreamRetries + 1,
-		}).Warn("llm stream empty response retrying")
-	}
+	return c.streamOnce(ctx, params, model, onEvent)
 }
 
-func (c *Client) streamOnce(ctx context.Context, params anthropic.MessageNewParams, model string, onEvent func(agent.StreamEvent)) (bool, error) {
+func (c *Client) streamOnce(ctx context.Context, params anthropic.MessageNewParams, model string, onEvent func(agent.StreamEvent)) error {
 	var stream messageStream
 	if c.newStream != nil {
 		stream = c.newStream(ctx, params)
@@ -236,18 +217,18 @@ func (c *Client) streamOnce(ctx context.Context, params anthropic.MessageNewPara
 		if state.Handle(variant, wrappedOnEvent) {
 			logSummary(nil)
 			rawCapture.LogIfEmpty(model, emittedText, emittedItem)
-			return emittedText || emittedItem, nil
+			return nil
 		}
 	}
 	if err := stream.Err(); err != nil {
 		logSummary(err)
-		return emittedText || emittedItem, err
+		return err
 	}
 	state.Flush(wrappedOnEvent)
 	wrappedOnEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	logSummary(nil)
 	rawCapture.LogIfEmpty(model, emittedText, emittedItem)
-	return emittedText || emittedItem, nil
+	return nil
 }
 
 func buildMessageParams(prompt agent.Prompt, model anthropic.Model) anthropic.MessageNewParams {
