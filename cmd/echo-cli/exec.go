@@ -222,10 +222,7 @@ func execMain(root rootArgs, args []string) {
 	defer bus.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	reviewer := tools.NewLLMCommandReviewer(client, rt.Model)
-	disp := dispatcher.New(runner, bus, workdir, dispatcher.Options{
-		Reviewer: reviewer,
-	})
+	disp := dispatcher.New(runner, bus, workdir, dispatcher.Options{})
 	disp.Start(ctx)
 
 	emit := func(ev jsonEvent) {
