@@ -117,24 +117,70 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 		}
 		rawCapture.Add(raw)
 		switch v := variant.(type) {
+		case anthropic.MessageStartEvent:
+			summary.bumpCount("message_start")
+			if v.Message.ID != "" {
+				summary.messageID = v.Message.ID
+			}
+			if v.Message.StopReason != "" {
+				summary.stopReason = string(v.Message.StopReason)
+			}
+			if v.Message.StopSequence != "" {
+				summary.stopSequence = v.Message.StopSequence
+			}
+			if len(v.Message.Content) > 0 {
+				summary.rawDeltaHasContent = true
+				for _, block := range v.Message.Content {
+					summary.recordContentBlock(block.AsAny())
+				}
+			}
 		case anthropic.MessageDeltaEvent:
+			summary.bumpCount("message_delta")
 			if v.Delta.StopReason != "" {
 				summary.stopReason = string(v.Delta.StopReason)
 			}
 			if v.Delta.StopSequence != "" {
 				summary.stopSequence = v.Delta.StopSequence
 			}
+		case anthropic.ContentBlockStartEvent:
+			summary.bumpCount("content_block_start")
+			summary.recordContentBlock(v.ContentBlock.AsAny())
 		case anthropic.ContentBlockDeltaEvent:
+			summary.bumpCount("content_block_delta")
 			switch d := v.Delta.AsAny().(type) {
 			case anthropic.TextDelta:
+				summary.bumpCount("text_delta")
 				if d.Text != "" {
 					summary.rawDeltaHasContent = true
 				}
+			case anthropic.InputJSONDelta:
+				summary.bumpCount("input_json_delta")
+				if d.PartialJSON != "" {
+					summary.rawDeltaHasContent = true
+				}
+			case anthropic.CitationsDelta:
+				summary.bumpCount("citations_delta")
+				summary.rawDeltaHasContent = true
+			case anthropic.ThinkingDelta:
+				summary.bumpCount("thinking_delta")
+				if d.Thinking != "" {
+					summary.rawDeltaHasContent = true
+				}
+			case anthropic.SignatureDelta:
+				summary.bumpCount("signature_delta")
+				if d.Signature != "" {
+					summary.rawDeltaHasContent = true
+				}
 			}
+		case anthropic.ContentBlockStopEvent:
+			summary.bumpCount("content_block_stop")
 		case anthropic.MessageStopEvent:
+			summary.bumpCount("message_stop")
 			if summary.finishReason == "" {
 				summary.finishReason = "message_stop"
 			}
+		default:
+			summary.bumpCount("unknown_event")
 		}
 		if state.Handle(variant, wrappedOnEvent) {
 			logSummary(nil)
@@ -309,6 +355,49 @@ type streamSummary struct {
 	stopSequence       string
 	finishReason       string
 	rawDeltaHasContent bool
+	messageID          string
+	eventCounts        map[string]int
+}
+
+func (s *streamSummary) bumpCount(key string) {
+	if s == nil || key == "" {
+		return
+	}
+	if s.eventCounts == nil {
+		s.eventCounts = make(map[string]int)
+	}
+	s.eventCounts[key]++
+}
+
+func (s *streamSummary) recordContentBlock(block any) {
+	switch b := block.(type) {
+	case anthropic.TextBlock:
+		s.bumpCount("content_block_text")
+		if b.Text != "" || len(b.Citations) > 0 {
+			s.rawDeltaHasContent = true
+		}
+	case anthropic.ThinkingBlock:
+		s.bumpCount("content_block_thinking")
+		if b.Thinking != "" || b.Signature != "" {
+			s.rawDeltaHasContent = true
+		}
+	case anthropic.RedactedThinkingBlock:
+		s.bumpCount("content_block_redacted_thinking")
+		if b.Data != "" {
+			s.rawDeltaHasContent = true
+		}
+	case anthropic.ToolUseBlock:
+		s.bumpCount("content_block_tool_use")
+		s.rawDeltaHasContent = true
+	case anthropic.ServerToolUseBlock:
+		s.bumpCount("content_block_server_tool_use")
+		s.rawDeltaHasContent = true
+	case anthropic.WebSearchToolResultBlock:
+		s.bumpCount("content_block_web_search_result")
+		s.rawDeltaHasContent = true
+	default:
+		s.bumpCount("content_block_unknown")
+	}
 }
 
 type rawStreamCapture struct {
@@ -374,6 +463,12 @@ func newStreamSummaryLogger(model string, summary *streamSummary) func(error) {
 			"stop_sequence":         summary.stopSequence,
 			"finish_reason":         finishReason,
 			"raw_delta_has_content": summary.rawDeltaHasContent,
+		}
+		if summary.messageID != "" {
+			fields["message_id"] = summary.messageID
+		}
+		if len(summary.eventCounts) > 0 {
+			fields["event_counts"] = summary.eventCounts
 		}
 		if err != nil {
 			fields["stream_error"] = err.Error()
