@@ -586,8 +586,11 @@ func containsChineseLanguagePrompt(msgs []agent.Message) bool {
 }
 
 type fakeModelClient struct {
-	chunks []string
-	usage  *agent.TokenUsage
+	chunks       []string
+	usage        *agent.TokenUsage
+	stopReason   string
+	stopSequence string
+	finishReason string
 }
 
 func (c fakeModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
@@ -607,7 +610,12 @@ func (c fakeModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent fun
 		clone := *c.usage
 		onEvent(agent.StreamEvent{Type: agent.StreamEventUsage, Usage: &clone})
 	}
-	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	onEvent(agent.StreamEvent{
+		Type:         agent.StreamEventCompleted,
+		StopReason:   c.stopReason,
+		StopSequence: c.stopSequence,
+		FinishReason: c.finishReason,
+	})
 	return nil
 }
 

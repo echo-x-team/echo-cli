@@ -138,6 +138,64 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	}
 }
 
+func TestLLMLogIncludesStopReasons(t *testing.T) {
+	oldLLMLog := llmLog
+	defer func() { llmLog = oldLLMLog }()
+
+	l := logrus.New()
+	l.SetOutput(io.Discard)
+	hook := &captureHook{}
+	l.AddHook(hook)
+	llmLog = logrus.NewEntry(l)
+
+	sub := events.Submission{SessionID: "sess-llm-stop", ID: "sub-stop"}
+	prompt := agent.Prompt{
+		Model: "gpt-test",
+		Messages: []agent.Message{
+			{Role: agent.RoleUser, Content: "hi"},
+		},
+	}
+
+	engine := &Engine{
+		client: fakeModelClient{
+			chunks:       []string{"hello"},
+			stopReason:   "end_turn",
+			stopSequence: "",
+			finishReason: "stop",
+		},
+		requestTimeout: 500 * time.Millisecond,
+		retries:        0,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	seq := 0
+	if _, err := engine.runModelInteraction(ctx, sub, prompt, discardPublisher{}, &seq); err != nil {
+		t.Fatalf("runModelInteraction failed: %v", err)
+	}
+
+	var entry *capturedEntry
+	for _, e := range hook.snapshot() {
+		if typ, _ := e.Data["type"].(string); typ == "llm.response" {
+			tmp := e
+			entry = &tmp
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("expected llm.response entry")
+	}
+	if got, _ := entry.Data["stop_reason"].(string); got != "end_turn" {
+		t.Fatalf("expected stop_reason=end_turn, got %v", entry.Data["stop_reason"])
+	}
+	if got, _ := entry.Data["stop_sequence"].(string); got != "" {
+		t.Fatalf("expected stop_sequence empty, got %v", entry.Data["stop_sequence"])
+	}
+	if got, _ := entry.Data["finish_reason"].(string); got != "stop" {
+		t.Fatalf("expected finish_reason=stop, got %v", entry.Data["finish_reason"])
+	}
+}
+
 type discardPublisher struct{}
 
 func (discardPublisher) Publish(_ context.Context, _ events.Event) error { return nil }

@@ -592,14 +592,14 @@ func (e *Engine) runTaskFinalize(ctx context.Context) {
 		log.Infof("run_task.finalize has_summary=true")
 		taskSummary := runState.lastSummary
 		if taskSummary.ExitReason == "" {
-			log.Infof("run_task.finalize exit_reason=fill_default")
 			taskSummary.ExitReason = runState.exitReason
+			log.Infof("run_task.finalize exit_reason=fill_default value=%s", taskSummary.ExitReason)
 		} else {
 			log.Infof("run_task.finalize exit_reason=present value=%s", taskSummary.ExitReason)
 		}
 		if taskSummary.ExitStage == "" {
-			log.Infof("run_task.finalize exit_stage=fill_default")
 			taskSummary.ExitStage = runState.exitStage
+			log.Infof("run_task.finalize exit_stage=fill_default value=%s", taskSummary.ExitStage)
 		} else {
 			log.Infof("run_task.finalize exit_stage=present value=%s", taskSummary.ExitStage)
 		}
@@ -711,6 +711,9 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 	collector := newModelStreamCollector()
 	seqStart := *seq
 	var usage *agent.TokenUsage
+	var stopReason string
+	var stopSequence string
+	var finishReason string
 
 	err := e.streamPrompt(ctx, submission, prompt, func(evt agent.StreamEvent) {
 		switch evt.Type {
@@ -740,6 +743,9 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 				usage = &clone
 			}
 		case agent.StreamEventCompleted:
+			stopReason = evt.StopReason
+			stopSequence = evt.StopSequence
+			finishReason = evt.FinishReason
 		default:
 		}
 	})
@@ -782,6 +788,11 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 		fields["usage_output_tokens"] = usage.OutputTokens
 		fields["usage_total_input_tokens"] = totalInputTokens
 		fields["usage_total_tokens"] = totalInputTokens + usage.OutputTokens
+	}
+	if stopReason != "" || stopSequence != "" || finishReason != "" {
+		fields["stop_reason"] = stopReason
+		fields["stop_sequence"] = stopSequence
+		fields["finish_reason"] = finishReason
 	}
 	if encoded.Err == nil {
 		fields["response_payload"] = encoded.Payload

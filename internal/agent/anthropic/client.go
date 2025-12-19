@@ -84,6 +84,14 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 	model := string(c.resolveModel(prompt.Model))
 	summary := streamSummary{}
 	logSummary := newStreamSummaryLogger(model, &summary)
+	wrappedOnEvent := func(evt agent.StreamEvent) {
+		if evt.Type == agent.StreamEventCompleted {
+			evt.StopReason = summary.stopReason
+			evt.StopSequence = summary.stopSequence
+			evt.FinishReason = resolveFinishReason(&summary)
+		}
+		onEvent(evt)
+	}
 
 	for stream.Next() {
 		event := stream.Current()
@@ -108,7 +116,7 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 				summary.finishReason = "message_stop"
 			}
 		}
-		if state.Handle(variant, onEvent) {
+		if state.Handle(variant, wrappedOnEvent) {
 			logSummary(nil)
 			return nil
 		}
@@ -117,8 +125,8 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 		logSummary(err)
 		return err
 	}
-	state.Flush(onEvent)
-	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	state.Flush(wrappedOnEvent)
+	wrappedOnEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	logSummary(nil)
 	return nil
 }
@@ -288,10 +296,7 @@ func newStreamSummaryLogger(model string, summary *streamSummary) func(error) {
 			return
 		}
 		logged = true
-		finishReason := summary.finishReason
-		if finishReason == "" && summary.stopReason != "" {
-			finishReason = summary.stopReason
-		}
+		finishReason := resolveFinishReason(summary)
 		fields := logger.Fields{
 			"model":                 model,
 			"stop_reason":           summary.stopReason,
@@ -304,6 +309,19 @@ func newStreamSummaryLogger(model string, summary *streamSummary) func(error) {
 		}
 		streamLog.WithFields(fields).Info("llm stream summary")
 	}
+}
+
+func resolveFinishReason(summary *streamSummary) string {
+	if summary == nil {
+		return ""
+	}
+	if summary.finishReason != "" {
+		return summary.finishReason
+	}
+	if summary.stopReason != "" {
+		return summary.stopReason
+	}
+	return ""
 }
 
 func newToolUseStreamState() *toolUseStreamState {

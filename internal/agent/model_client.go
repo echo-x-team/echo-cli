@@ -53,6 +53,10 @@ type StreamEvent struct {
 	Item json.RawMessage
 	// Usage 携带模型返回的 token 统计（如有）。
 	Usage *TokenUsage
+	// StopReason/StopSequence/FinishReason 记录流式完成原因（如有）。
+	StopReason   string
+	StopSequence string
+	FinishReason string
 }
 
 // TokenUsage 描述一次请求的 token 使用情况。
