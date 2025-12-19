@@ -47,9 +47,6 @@ func toolUpdatedBlock(res tools.ToolResult) string {
 		if strings.TrimSpace(res.ApprovalReason) != "" {
 			sb.WriteString("\n  └ reason: " + strings.TrimSpace(res.ApprovalReason))
 		}
-		if strings.TrimSpace(res.ApprovalID) != "" {
-			sb.WriteString("\n  └ action: /approve " + strings.TrimSpace(res.ApprovalID) + "  (or /deny " + strings.TrimSpace(res.ApprovalID) + ")")
-		}
 		return sb.String()
 	case "approved":
 		if strings.TrimSpace(res.ApprovalID) == "" {

@@ -6,6 +6,11 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+// WrapText 使用词级别换行。
+func WrapText(text string, width int) []string {
+	return wrapText(text, width)
+}
+
 // wrapText 使用词级别换行。
 func wrapText(text string, width int) []string {
 	if width <= 0 {

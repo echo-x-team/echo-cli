@@ -117,6 +117,8 @@ type Model struct {
 	activeSub                string
 	pending                  bool
 	err                      error
+	approvalActive           *approvalRequest
+	approvalQueue            []approvalRequest
 	initSend                 string
 	searching                bool
 	mentionAt                int
@@ -356,6 +358,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.finish(cmds...)
 	case tea.KeyMsg:
+		if m.approvalActive != nil {
+			if cmd := m.handleApprovalKey(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m.finish(cmds...)
+		}
 		if msg.Type == tea.KeyEnter && msg.Alt {
 			break
 		}
@@ -583,6 +591,14 @@ func (m *Model) View() string {
 	sections = append(sections, history, bottom)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
+	if m.approvalActive != nil {
+		width := m.width - 4
+		if width < 20 {
+			width = m.width
+		}
+		overlay := modalStyle.Render(m.approvalView(width))
+		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
+	}
 	if m.searching {
 		overlay := modalStyle.Render(m.search.View())
 		return lipgloss.JoinVertical(lipgloss.Left, content, overlay)
@@ -800,6 +816,14 @@ func (m *Model) handleEngineEvent(evt events.Event) tea.Cmd {
 
 	// Then update TUI-specific pending/queue state.
 	switch evt.Type {
+	case events.EventToolEvent:
+		toolEv, ok := evt.Payload.(tools.ToolEvent)
+		if !ok {
+			return nil
+		}
+		if toolEv.Type == "item.updated" && strings.EqualFold(strings.TrimSpace(toolEv.Result.Status), "requires_approval") {
+			m.enqueueApprovalRequest(toolEv.Result, evt.SessionID)
+		}
 	case events.EventPlanUpdated:
 		args, ok := evt.Payload.(tools.UpdatePlanArgs)
 		if !ok {
@@ -1536,40 +1560,6 @@ func (m *Model) executeSlashCommand(cmd slash.Command, args string) tea.Cmd {
 		info := fmt.Sprintf("model=%s dir=%s", m.modelName, m.workdir)
 		m.appendAssistantMessage(info)
 		return nil
-	case slash.CommandApprove, slash.CommandDeny:
-		if args == "" {
-			m.appendAssistantMessage("usage: /approve <approval_id>  (or /deny <approval_id>)")
-			return nil
-		}
-		if m.gateway == nil {
-			m.appendAssistantMessage("gateway not configured; cannot submit approval decision.")
-			return nil
-		}
-		approvalID := firstArg(args)
-		if approvalID == "" {
-			m.appendAssistantMessage("missing approval_id")
-			return nil
-		}
-		sessionID := m.eqCtx.SessionID
-		if strings.TrimSpace(sessionID) == "" {
-			sessionID = m.resumeSessionID
-		}
-		if strings.TrimSpace(sessionID) == "" {
-			m.appendAssistantMessage("session id not set; cannot submit approval decision.")
-			return nil
-		}
-		approved := cmd == slash.CommandApprove
-		action := "deny"
-		if approved {
-			action = "approve"
-		}
-		m.appendAssistantMessage(fmt.Sprintf("submitted %s for %s", action, approvalID))
-		return func() tea.Msg {
-			if _, err := m.gateway.SubmitApprovalDecision(context.Background(), sessionID, approvalID, approved); err != nil {
-				return systemMsg{Text: fmt.Sprintf("submit approval decision failed: %v", err)}
-			}
-			return nil
-		}
 	case slash.CommandSessions:
 		ids, err := session.ListIDs()
 		if err != nil {

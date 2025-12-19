@@ -558,8 +558,6 @@ func builtinItems(opts Options) []Item {
 		Item{Kind: ItemBuiltin, Command: CommandDiff, Description: "查看工作区 diff"},
 		Item{Kind: ItemBuiltin, Command: CommandMention, Description: "搜索文件/路径"},
 		Item{Kind: ItemBuiltin, Command: CommandStatus, Description: "查看当前状态"},
-		Item{Kind: ItemBuiltin, Command: CommandApprove, Description: "审批执行危险命令（approve）"},
-		Item{Kind: ItemBuiltin, Command: CommandDeny, Description: "拒绝执行危险命令（deny）"},
 		Item{Kind: ItemBuiltin, Command: CommandMCP, Description: "管理 MCP 连接"},
 		Item{Kind: ItemBuiltin, Command: CommandLogout, Description: "注销登录"},
 		Item{Kind: ItemBuiltin, Command: CommandQuit, Description: "退出 Echo"},
