@@ -328,168 +328,326 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx echoco
 	e.logRunTaskError(submission, "tool_result", errors.New(reason), fields)
 }
 
+type runTaskStateKey struct{}
+
+type runTaskState struct {
+	submission events.Submission
+	emit       events.EventPublisher
+
+	seq            int
+	turnCtx        echocontext.TurnContext
+	toolEvents     <-chan tools.ToolEvent
+	stopTools      func()
+	publishedCalls map[string]struct{}
+	turnIndex      int
+	lastSummary    events.TaskSummary
+	hasSummary     bool
+
+	exitReason       string
+	exitStage        string
+	exitErr          error
+	exitFinalContent string
+	exitFinalItems   int
+
+	turnStart   time.Time
+	turn        turnResult
+	toolResults []tools.ToolResult
+}
+
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
 // runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
-func (e *Engine) runTask(ctx context.Context, submission events.Submission, state echocontext.TurnState, emit events.EventPublisher) error {
-	seq := 0
-	turnCtx := state.Context
+func (e *Engine) runTask(ctx context.Context, submission events.Submission, state echocontext.TurnState, emit events.EventPublisher) error { // 主任务循环入口，驱动多轮对话与工具执行
+	runCtx := e.runTaskStagePreflightAndStart(ctx, submission, state, emit) // 阶段 1：前置校验与任务启动
+	defer e.runTaskFinalize(runCtx)                                         // 任务结束时统一收尾（日志与资源释放）
+	for {                                                                   // 回合循环：直到完成/出错/被取消
+		if err := e.runTaskStagePrepareTurnInput(runCtx); err != nil { // 阶段 2：回合输入准备（含 ctx.Err 检查）
+			log.Infof("run_task.stage=prepare_turn_input result=error err=%v", err)
+			return e.runTaskStageHandleError(runCtx, err, "ctx_check") // 阶段 7：异常路径处理（上下文终止）
+		} else {
+			log.Infof("run_task.stage=prepare_turn_input result=ok")
+		} // end prepare stage
+		if err := e.runTaskStageRunTurn(runCtx); err != nil { // 阶段 3：单轮执行（模型交互 + 工具执行）
+			log.Infof("run_task.stage=run_turn result=error err=%v", err)
+			return e.runTaskStageHandleError(runCtx, err, "run_turn") // 阶段 7：异常路径处理（回合失败）
+		} else {
+			log.Infof("run_task.stage=run_turn result=ok")
+		} // end run turn stage
+		e.runTaskStageProcessOutput(runCtx)         // 阶段 4：处理输出与状态（记录历史项）
+		if e.runTaskStageHandleTokenLimit(runCtx) { // 阶段 5：上下文限额处理（触发压缩则继续下一轮）
+			log.Infof("run_task.stage=token_limit result=compacted_or_continue")
+			continue // 继续下一轮，不向用户终止输出
+		} else {
+			log.Infof("run_task.stage=token_limit result=not_triggered")
+		} // end token limit stage
+		done, err := e.runTaskStageCheckCompletion(runCtx) // 阶段 6：完成判定（最终输出/继续循环）
+		if err != nil {                                    // 兜底处理不可恢复错误
+			log.Infof("run_task.stage=check_completion result=error err=%v", err)
+			return err // 直接返回错误结束任务
+		} else {
+			log.Infof("run_task.stage=check_completion result=ok done=%t", done)
+		} // end completion error
+		if done { // 已完成任务
+			log.Infof("run_task.stage=check_completion result=done")
+			return nil // 正常返回
+		} else {
+			log.Infof("run_task.stage=check_completion result=continue")
+		} // end done
+	} // end for
+} // end runTask
+
+func (e *Engine) runTaskStagePreflightAndStart(ctx context.Context, submission events.Submission, state echocontext.TurnState, emit events.EventPublisher) context.Context {
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
-	defer stopTools()
-	publishedCalls := map[string]struct{}{}
-	turnIndex := 0
-	var lastSummary events.TaskSummary
-	hasSummary := false
-
-	exitReason := "unknown"
-	exitStage := "unknown"
-	var exitErr error
-	exitFinalContent := ""
-	exitFinalItems := 0
-
-	logSummary := func(kind string, summary events.TaskSummary, turnIndex int) {
-		fields := logger.Fields{
-			"session_id":    submission.SessionID,
-			"submission_id": submission.ID,
-			"status":        summary.Status,
-			"exit_reason":   summary.ExitReason,
-			"exit_stage":    summary.ExitStage,
-			"duration_ms":   summary.DurationMs,
-			"model":         summary.Model,
-			"input_tokens":  summary.InputTokens,
-			"output_tokens": summary.OutputTokens,
-			"turn_index":    turnIndex,
-		}
-		if summary.Error != "" {
-			fields["error"] = sanitizeLogText(summary.Error)
-		}
-		taskLog.WithField("type", kind).WithFields(fields).Info(summary.Text)
+	runState := &runTaskState{
+		submission:     submission,
+		emit:           emit,
+		seq:            0,
+		turnCtx:        state.Context,
+		toolEvents:     toolEvents,
+		stopTools:      stopTools,
+		publishedCalls: map[string]struct{}{},
+		turnIndex:      0,
+		exitReason:     "unknown",
+		exitStage:      "unknown",
 	}
+	return context.WithValue(ctx, runTaskStateKey{}, runState)
+}
 
-	emitTurnSummary := func(turnCtx echocontext.TurnContext, started time.Time, finalContent string, toolResults []tools.ToolResult, reason string, stage string, err error) {
-		summary := buildTurnSummary(turnSummaryInput{
-			Submission:   submission,
-			TurnCtx:      turnCtx,
-			Start:        started,
-			FinalContent: finalContent,
-			ToolResults:  toolResults,
-			ExitReason:   reason,
-			ExitStage:    stage,
-			Err:          err,
-		})
-		lastSummary = summary
-		hasSummary = true
-		logSummary("turn.summary", summary, turnIndex)
-		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = emit.Publish(publishCtx, events.Event{
-			Type:         events.EventTaskSummary,
-			SubmissionID: submission.ID,
-			SessionID:    submission.SessionID,
+func (e *Engine) runTaskStagePrepareTurnInput(ctx context.Context) error {
+	runState := runTaskStateFromContext(ctx)
+	runState.turnIndex++
+	if err := ctx.Err(); err != nil {
+		log.Infof("run_task.prepare_turn_input ctx_err=true err=%v", err)
+		return err
+	} else {
+		log.Infof("run_task.prepare_turn_input ctx_err=false turn_index=%d", runState.turnIndex)
+	}
+	runState.turnStart = time.Now()
+	runState.turn = turnResult{}
+	runState.toolResults = nil
+	return nil
+}
+
+func (e *Engine) runTaskStageRunTurn(ctx context.Context) error {
+	runState := runTaskStateFromContext(ctx)
+	turn, toolResults, err := e.runTurn(ctx, runState.submission, runState.turnCtx, runState.emit, &runState.seq, runState.toolEvents, runState.publishedCalls)
+	if err != nil {
+		log.Infof("run_task.run_turn result=error err=%v", err)
+		return err
+	} else {
+		log.Infof("run_task.run_turn result=ok responses=%d items_to_record=%d tool_results=%d", len(turn.responses), len(turn.itemsToRecord), len(toolResults))
+	}
+	runState.turn = turn
+	runState.toolResults = toolResults
+	return nil
+}
+
+func (e *Engine) runTaskStageProcessOutput(ctx context.Context) {
+	runState := runTaskStateFromContext(ctx)
+	e.recordConversationItems(runState.submission.SessionID, &runState.turnCtx, runState.turn.itemsToRecord)
+}
+
+func (e *Engine) runTaskStageHandleTokenLimit(ctx context.Context) bool {
+	runState := runTaskStateFromContext(ctx)
+	if !e.tokenLimitReached(runState.turnCtx) {
+		log.Infof("run_task.token_limit reached=false model=%s", runState.turnCtx.Model)
+		return false
+	} else {
+		log.Infof("run_task.token_limit reached=true model=%s", runState.turnCtx.Model)
+	}
+	e.runTaskEmitTurnSummary(ctx, runState.turn.finalContent, runState.toolResults, "", "", nil)
+	updated, compacted := e.runInlineAutoCompactTask(ctx, runState.submission.SessionID, runState.turnCtx)
+	if compacted {
+		log.Infof("run_task.token_limit compacted=true new_history_items=%d", len(updated.ResponseHistory))
+		runState.turnCtx = updated
+	} else {
+		log.Infof("run_task.token_limit compacted=false")
+	}
+	return true
+}
+
+func (e *Engine) runTaskStageCheckCompletion(ctx context.Context) (bool, error) {
+	runState := runTaskStateFromContext(ctx)
+	if len(runState.turn.responses) == 0 {
+		log.Infof("run_task.check_completion responses=0 final_content_len=%d", len(runState.turn.finalContent))
+		_ = runState.emit.Publish(ctx, events.Event{
+			Type:         events.EventAgentOutput,
+			SubmissionID: runState.submission.ID,
+			SessionID:    runState.submission.SessionID,
 			Timestamp:    time.Now(),
-			Payload:      summary,
-			Metadata:     submission.Metadata,
+			Payload: events.AgentOutput{
+				Content:  runState.turn.finalContent,
+				Final:    true,
+				Sequence: runState.seq,
+			},
+			Metadata: runState.submission.Metadata,
 		})
+		e.runTaskEmitTurnSummary(ctx, runState.turn.finalContent, runState.toolResults, "", "", nil)
+		runState.exitReason = "completed_final"
+		runState.exitStage = "final_no_responses"
+		runState.exitFinalContent = runState.turn.finalContent
+		runState.exitFinalItems = len(runState.turn.itemsToRecord)
+		return true, nil
+	} else {
+		log.Infof("run_task.check_completion responses=%d continue=true", len(runState.turn.responses))
 	}
+	e.runTaskEmitTurnSummary(ctx, runState.turn.finalContent, runState.toolResults, "", "", nil)
+	return false, nil
+}
 
-	defer func() {
-		if hasSummary {
-			taskSummary := lastSummary
-			if taskSummary.ExitReason == "" {
-				taskSummary.ExitReason = exitReason
-			}
-			if taskSummary.ExitStage == "" {
-				taskSummary.ExitStage = exitStage
-			}
-			if taskSummary.Error == "" && exitErr != nil {
-				taskSummary.Error = exitErr.Error()
-				taskSummary.Status = taskSummaryStatus(exitErr)
-			}
-			logSummary("task.summary", taskSummary, turnIndex)
-		}
-		fields := logger.Fields{
-			"session":      submission.SessionID,
-			"submission":   submission.ID,
-			"model":        turnCtx.Model,
-			"sequence":     seq,
-			"exit_reason":  exitReason,
-			"exit_stage":   exitStage,
-			"final_items":  exitFinalItems,
-			"final_length": len(exitFinalContent),
-		}
-		if exitErr != nil {
-			fields["exit_error"] = sanitizeLogText(exitErr.Error())
-		}
-		if strings.TrimSpace(exitFinalContent) != "" {
-			fields["final_preview"] = sanitizeLogText(previewForLog(exitFinalContent, 600))
-		}
-		llmLog.WithField("type", "run_task.exit").WithField("dir", "agent").WithFields(fields).Info("run_task exit")
-	}()
-
-	for {
-		turnIndex++
-		if err := ctx.Err(); err != nil {
-			// Treat cancellation as an aborted turn to mirror Codex behaviour.
-			e.logRunTaskError(submission, "run_task", err, logger.Fields{
-				"sequence": seq,
-				"model":    turnCtx.Model,
-			})
-			exitReason = "context_done"
-			exitStage = "ctx_check"
-			exitErr = err
-			return err
-		}
-
-		turnStart := time.Now()
-		turn, toolResults, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedCalls)
-		if err != nil {
-			exitErr = err
-			exitStage = "run_turn"
-			var se stageError
-			if errors.As(err, &se) && strings.TrimSpace(se.Stage) != "" {
-				exitStage = se.Stage
-			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				exitReason = "context_done"
-			} else {
-				exitReason = "error"
-			}
-			emitTurnSummary(turnCtx, turnStart, "", nil, exitReason, exitStage, err)
-			return err
-		}
-		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
-
-		if e.tokenLimitReached(turnCtx) {
-			emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
-			updated, compacted := e.runInlineAutoCompactTask(ctx, submission.SessionID, turnCtx)
-			if compacted {
-				turnCtx = updated
-			}
-			continue
-		}
-
-		if len(turn.responses) == 0 {
-			_ = emit.Publish(ctx, events.Event{
-				Type:         events.EventAgentOutput,
-				SubmissionID: submission.ID,
-				SessionID:    submission.SessionID,
-				Timestamp:    time.Now(),
-				Payload: events.AgentOutput{
-					Content:  turn.finalContent,
-					Final:    true,
-					Sequence: seq,
-				},
-				Metadata: submission.Metadata,
-			})
-			emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
-			exitReason = "completed_final"
-			exitStage = "final_no_responses"
-			exitFinalContent = turn.finalContent
-			exitFinalItems = len(turn.itemsToRecord)
-			return nil
-		}
-		emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
+func (e *Engine) runTaskStageHandleError(ctx context.Context, err error, stageHint string) error {
+	runState := runTaskStateFromContext(ctx)
+	if stageHint == "ctx_check" {
+		log.Infof("run_task.handle_error stage=ctx_check err=%v", err)
+		// Treat cancellation as an aborted turn to mirror Codex behaviour.
+		e.logRunTaskError(runState.submission, "run_task", err, logger.Fields{
+			"sequence": runState.seq,
+			"model":    runState.turnCtx.Model,
+		})
+		runState.exitReason = "context_done"
+		runState.exitStage = "ctx_check"
+		runState.exitErr = err
+		return err
+	} else {
+		log.Infof("run_task.handle_error stage_hint=%s err=%v", stageHint, err)
 	}
+	runState.exitErr = err
+	runState.exitStage = stageHint
+	var se stageError
+	if errors.As(err, &se) && strings.TrimSpace(se.Stage) != "" {
+		log.Infof("run_task.handle_error stage_override=applied stage=%s", se.Stage)
+		runState.exitStage = se.Stage
+	} else {
+		log.Infof("run_task.handle_error stage_override=none")
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		log.Infof("run_task.handle_error reason=context_done")
+		runState.exitReason = "context_done"
+	} else {
+		log.Infof("run_task.handle_error reason=error")
+		runState.exitReason = "error"
+	}
+	e.runTaskEmitTurnSummary(ctx, "", nil, runState.exitReason, runState.exitStage, err)
+	return err
+}
 
+func (e *Engine) runTaskEmitTurnSummary(ctx context.Context, finalContent string, toolResults []tools.ToolResult, reason string, stage string, err error) {
+	runState := runTaskStateFromContext(ctx)
+	summary := buildTurnSummary(turnSummaryInput{
+		Submission:   runState.submission,
+		TurnCtx:      runState.turnCtx,
+		Start:        runState.turnStart,
+		FinalContent: finalContent,
+		ToolResults:  toolResults,
+		ExitReason:   reason,
+		ExitStage:    stage,
+		Err:          err,
+	})
+	runState.lastSummary = summary
+	runState.hasSummary = true
+	e.runTaskLogSummary(ctx, "turn.summary", summary)
+	publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = runState.emit.Publish(publishCtx, events.Event{
+		Type:         events.EventTaskSummary,
+		SubmissionID: runState.submission.ID,
+		SessionID:    runState.submission.SessionID,
+		Timestamp:    time.Now(),
+		Payload:      summary,
+		Metadata:     runState.submission.Metadata,
+	})
+}
+
+func (e *Engine) runTaskLogSummary(ctx context.Context, kind string, summary events.TaskSummary) {
+	runState := runTaskStateFromContext(ctx)
+	fields := logger.Fields{
+		"session_id":    runState.submission.SessionID,
+		"submission_id": runState.submission.ID,
+		"status":        summary.Status,
+		"exit_reason":   summary.ExitReason,
+		"exit_stage":    summary.ExitStage,
+		"duration_ms":   summary.DurationMs,
+		"model":         summary.Model,
+		"input_tokens":  summary.InputTokens,
+		"output_tokens": summary.OutputTokens,
+		"turn_index":    runState.turnIndex,
+	}
+	if summary.Error != "" {
+		log.Infof("run_task.log_summary kind=%s has_error=true", kind)
+		fields["error"] = sanitizeLogText(summary.Error)
+	} else {
+		log.Infof("run_task.log_summary kind=%s has_error=false", kind)
+	}
+	taskLog.WithField("type", kind).WithFields(fields).Info(summary.Text)
+}
+
+func (e *Engine) runTaskFinalize(ctx context.Context) {
+	runState := runTaskStateFromContext(ctx)
+	if runState.stopTools != nil {
+		log.Infof("run_task.finalize stop_tools=call")
+		runState.stopTools()
+	} else {
+		log.Infof("run_task.finalize stop_tools=none")
+	}
+	if runState.hasSummary {
+		log.Infof("run_task.finalize has_summary=true")
+		taskSummary := runState.lastSummary
+		if taskSummary.ExitReason == "" {
+			log.Infof("run_task.finalize exit_reason=fill_default")
+			taskSummary.ExitReason = runState.exitReason
+		} else {
+			log.Infof("run_task.finalize exit_reason=present value=%s", taskSummary.ExitReason)
+		}
+		if taskSummary.ExitStage == "" {
+			log.Infof("run_task.finalize exit_stage=fill_default")
+			taskSummary.ExitStage = runState.exitStage
+		} else {
+			log.Infof("run_task.finalize exit_stage=present value=%s", taskSummary.ExitStage)
+		}
+		if taskSummary.Error == "" && runState.exitErr != nil {
+			log.Infof("run_task.finalize summary_error=fill_from_exit")
+			taskSummary.Error = runState.exitErr.Error()
+			taskSummary.Status = taskSummaryStatus(runState.exitErr)
+		} else {
+			log.Infof("run_task.finalize summary_error=preserved_or_missing")
+		}
+		e.runTaskLogSummary(ctx, "task.summary", taskSummary)
+	} else {
+		log.Infof("run_task.finalize has_summary=false")
+	}
+	fields := logger.Fields{
+		"session":      runState.submission.SessionID,
+		"submission":   runState.submission.ID,
+		"model":        runState.turnCtx.Model,
+		"sequence":     runState.seq,
+		"exit_reason":  runState.exitReason,
+		"exit_stage":   runState.exitStage,
+		"final_items":  runState.exitFinalItems,
+		"final_length": len(runState.exitFinalContent),
+	}
+	if runState.exitErr != nil {
+		log.Infof("run_task.finalize exit_err=present")
+		fields["exit_error"] = sanitizeLogText(runState.exitErr.Error())
+	} else {
+		log.Infof("run_task.finalize exit_err=none")
+	}
+	if strings.TrimSpace(runState.exitFinalContent) != "" {
+		log.Infof("run_task.finalize final_preview=present")
+		fields["final_preview"] = sanitizeLogText(previewForLog(runState.exitFinalContent, 600))
+	} else {
+		log.Infof("run_task.finalize final_preview=empty")
+	}
+	llmLog.WithField("type", "run_task.exit").WithField("dir", "agent").WithFields(fields).Info("run_task exit")
+}
+
+func runTaskStateFromContext(ctx context.Context) *runTaskState {
+	runState, ok := ctx.Value(runTaskStateKey{}).(*runTaskState)
+	if !ok || runState == nil {
+		log.Infof("run_task.state_from_context result=missing")
+		panic("runTask state missing")
+	} else {
+		log.Infof("run_task.state_from_context result=ok")
+	}
+	return runState
 }
 
 // runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
@@ -1152,38 +1310,6 @@ func cloneMetadataMap(meta map[string]string) map[string]string {
 	return out
 }
 
-func formatToolResults(results []tools.ToolResult) []agent.Message {
-	msgs := make([]agent.Message, 0, len(results))
-	for _, res := range results {
-		if res.Kind == tools.ToolPlanUpdate {
-			msgs = append(msgs, agent.Message{Role: agent.RoleUser, Content: formatPlanResult(res)})
-			continue
-		}
-
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Tool %s (%s)", res.Kind, res.ID))
-		if res.Command != "" {
-			sb.WriteString("\ncommand: " + res.Command)
-		}
-		if res.Path != "" {
-			sb.WriteString("\npath: " + res.Path)
-		}
-		if res.ExitCode != 0 {
-			sb.WriteString(fmt.Sprintf("\nexit_code: %d", res.ExitCode))
-		}
-		switch {
-		case res.Error != "":
-			sb.WriteString("\nerror: " + res.Error)
-		case res.Output != "":
-			sb.WriteString("\noutput:\n" + res.Output)
-		case res.Status != "":
-			sb.WriteString("\nstatus: " + res.Status)
-		}
-		msgs = append(msgs, agent.Message{Role: agent.RoleUser, Content: sb.String()})
-	}
-	return msgs
-}
-
 func formatPlanResult(res tools.ToolResult) string {
 	if res.Error != "" {
 		return fmt.Sprintf("Plan update failed: %s", res.Error)
@@ -1261,6 +1387,10 @@ func (e *Engine) recordConversationItems(sessionID string, turnCtx *echocontext.
 }
 
 func (e *Engine) tokenLimitReached(turnCtx echocontext.TurnContext) bool {
+	// 基于当前模型的上下文窗口判断是否触达自动压缩阈值：
+	// 1) 先获取模型的上下文窗口大小，缺失或无效则不触发；
+	// 2) 将窗口换算为默认自动压缩阈值，阈值无效则不触发；
+	// 3) 估算当前 turn 构建出的 prompt token 数，达到/超过阈值则需要压缩。
 	window, ok := echocontext.ContextWindowForModel(turnCtx.Model)
 	if !ok || window <= 0 {
 		return false
