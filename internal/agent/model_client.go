@@ -42,6 +42,7 @@ const (
 	StreamEventTextDelta StreamEventType = "text_delta"
 	StreamEventItem      StreamEventType = "item_done"
 	StreamEventCompleted StreamEventType = "completed"
+	StreamEventUsage     StreamEventType = "usage"
 )
 
 // StreamEvent 统一描述模型流式返回的结构化事件或文本增量。
@@ -50,4 +51,14 @@ type StreamEvent struct {
 	Type StreamEventType
 	Text string
 	Item json.RawMessage
+	// Usage 携带模型返回的 token 统计（如有）。
+	Usage *TokenUsage
+}
+
+// TokenUsage 描述一次请求的 token 使用情况。
+type TokenUsage struct {
+	InputTokens              int64
+	OutputTokens             int64
+	CacheCreationInputTokens int64
+	CacheReadInputTokens     int64
 }

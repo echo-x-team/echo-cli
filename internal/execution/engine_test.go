@@ -587,6 +587,7 @@ func containsChineseLanguagePrompt(msgs []agent.Message) bool {
 
 type fakeModelClient struct {
 	chunks []string
+	usage  *agent.TokenUsage
 }
 
 func (c fakeModelClient) Complete(_ context.Context, _ agent.Prompt) (string, error) {
@@ -601,6 +602,10 @@ func (c fakeModelClient) Stream(ctx context.Context, _ agent.Prompt, onEvent fun
 		default:
 		}
 		onEvent(agent.StreamEvent{Type: agent.StreamEventTextDelta, Text: chunk})
+	}
+	if c.usage != nil {
+		clone := *c.usage
+		onEvent(agent.StreamEvent{Type: agent.StreamEventUsage, Usage: &clone})
 	}
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	return nil

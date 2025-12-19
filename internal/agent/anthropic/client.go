@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"echo-cli/internal/agent"
+	"echo-cli/internal/logger"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -27,6 +28,7 @@ type Client struct {
 }
 
 var _ agent.ModelClient = (*Client)(nil)
+var streamLog = logger.Named("llm")
 
 func New(opts Options) (*Client, error) {
 	token := strings.TrimSpace(opts.Token)
@@ -79,18 +81,45 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 	params := buildMessageParams(prompt, c.resolveModel(prompt.Model))
 	stream := c.api.Messages.NewStreaming(ctx, params)
 	state := newToolUseStreamState()
+	model := string(c.resolveModel(prompt.Model))
+	summary := streamSummary{}
+	logSummary := newStreamSummaryLogger(model, &summary)
 
 	for stream.Next() {
 		event := stream.Current()
-		if state.Handle(event.AsAny(), onEvent) {
+		variant := event.AsAny()
+		switch v := variant.(type) {
+		case anthropic.MessageDeltaEvent:
+			if v.Delta.StopReason != "" {
+				summary.stopReason = string(v.Delta.StopReason)
+			}
+			if v.Delta.StopSequence != "" {
+				summary.stopSequence = v.Delta.StopSequence
+			}
+		case anthropic.ContentBlockDeltaEvent:
+			switch d := v.Delta.AsAny().(type) {
+			case anthropic.TextDelta:
+				if d.Text != "" {
+					summary.rawDeltaHasContent = true
+				}
+			}
+		case anthropic.MessageStopEvent:
+			if summary.finishReason == "" {
+				summary.finishReason = "message_stop"
+			}
+		}
+		if state.Handle(variant, onEvent) {
+			logSummary(nil)
 			return nil
 		}
 	}
 	if err := stream.Err(); err != nil {
+		logSummary(err)
 		return err
 	}
 	state.Flush(onEvent)
 	onEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
+	logSummary(nil)
 	return nil
 }
 
@@ -245,12 +274,54 @@ type toolUseStreamState struct {
 	pending map[int64]*pendingToolUse
 }
 
+type streamSummary struct {
+	stopReason         string
+	stopSequence       string
+	finishReason       string
+	rawDeltaHasContent bool
+}
+
+func newStreamSummaryLogger(model string, summary *streamSummary) func(error) {
+	logged := false
+	return func(err error) {
+		if logged {
+			return
+		}
+		logged = true
+		finishReason := summary.finishReason
+		if finishReason == "" && summary.stopReason != "" {
+			finishReason = summary.stopReason
+		}
+		fields := logger.Fields{
+			"model":                 model,
+			"stop_reason":           summary.stopReason,
+			"stop_sequence":         summary.stopSequence,
+			"finish_reason":         finishReason,
+			"raw_delta_has_content": summary.rawDeltaHasContent,
+		}
+		if err != nil {
+			fields["stream_error"] = err.Error()
+		}
+		streamLog.WithFields(fields).Info("llm stream summary")
+	}
+}
+
 func newToolUseStreamState() *toolUseStreamState {
 	return &toolUseStreamState{pending: make(map[int64]*pendingToolUse)}
 }
 
 func (s *toolUseStreamState) Handle(event any, onEvent func(agent.StreamEvent)) (completed bool) {
 	switch v := event.(type) {
+	case anthropic.MessageDeltaEvent:
+		onEvent(agent.StreamEvent{
+			Type: agent.StreamEventUsage,
+			Usage: &agent.TokenUsage{
+				InputTokens:              v.Usage.InputTokens,
+				OutputTokens:             v.Usage.OutputTokens,
+				CacheCreationInputTokens: v.Usage.CacheCreationInputTokens,
+				CacheReadInputTokens:     v.Usage.CacheReadInputTokens,
+			},
+		})
 	case anthropic.ContentBlockStartEvent:
 		switch b := v.ContentBlock.AsAny().(type) {
 		case anthropic.ToolUseBlock:

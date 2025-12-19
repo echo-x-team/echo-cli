@@ -636,7 +636,7 @@ func (e *Engine) runTaskFinalize(ctx context.Context) {
 	} else {
 		log.Infof("run_task.finalize final_preview=empty")
 	}
-	llmLog.WithField("type", "run_task.exit").WithField("dir", "agent").WithFields(fields).Info("run_task exit")
+	llmLog.WithField("type", "run_task.exit").WithField("direction", "agent").WithFields(fields).Info("run_task exit")
 }
 
 func runTaskStateFromContext(ctx context.Context) *runTaskState {
@@ -710,6 +710,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt agent.Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
 	collector := newModelStreamCollector()
 	seqStart := *seq
+	var usage *agent.TokenUsage
 
 	err := e.streamPrompt(ctx, submission, prompt, func(evt agent.StreamEvent) {
 		switch evt.Type {
@@ -733,6 +734,11 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 			*seq++
 		case agent.StreamEventItem:
 			collector.OnItem(evt.Item)
+		case agent.StreamEventUsage:
+			if evt.Usage != nil {
+				clone := *evt.Usage
+				usage = &clone
+			}
 		case agent.StreamEventCompleted:
 		default:
 		}
@@ -767,6 +773,15 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 		"response_text_tokens": int64(echocontext.ApproxTokenCount(output.fullResponse)),
 		"response_bytes":       encoded.Bytes,
 		"response_tokens":      encoded.Tokens,
+	}
+	if usage != nil {
+		cachedInputTokens := usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+		totalInputTokens := usage.InputTokens + cachedInputTokens
+		fields["usage_input_tokens"] = usage.InputTokens
+		fields["usage_cached_input_tokens"] = cachedInputTokens
+		fields["usage_output_tokens"] = usage.OutputTokens
+		fields["usage_total_input_tokens"] = totalInputTokens
+		fields["usage_total_tokens"] = totalInputTokens + usage.OutputTokens
 	}
 	if encoded.Err == nil {
 		fields["response_payload"] = encoded.Payload
@@ -821,11 +836,11 @@ const (
 )
 
 func llmOut() *logger.LogEntry {
-	return llmLog.WithField("dir", llmDirAgentToLLM)
+	return llmLog.WithField("direction", llmDirAgentToLLM)
 }
 
 func llmIn() *logger.LogEntry {
-	return llmLog.WithField("dir", llmDirLLMToAgent)
+	return llmLog.WithField("direction", llmDirLLMToAgent)
 }
 
 type llmResponseLogPayload struct {
@@ -1023,6 +1038,12 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 				in.Debugf("llm->agent stream chunk type=text len=%d preview=%s", len(evt.Text), sanitizeLogText(previewForLog(evt.Text, 200)))
 			case agent.StreamEventItem:
 				in.Debugf("llm->agent stream chunk type=item len=%d payload=%s", len(evt.Item), prettyPayloadBytesForLog(evt.Item, 200))
+			case agent.StreamEventUsage:
+				if evt.Usage != nil {
+					in.Debugf("llm->agent stream chunk type=usage input=%d output=%d cache_create=%d cache_read=%d", evt.Usage.InputTokens, evt.Usage.OutputTokens, evt.Usage.CacheCreationInputTokens, evt.Usage.CacheReadInputTokens)
+				} else {
+					in.Debugf("llm->agent stream chunk type=usage missing=true")
+				}
 			case agent.StreamEventCompleted:
 				in.Debugf("llm->agent stream chunk type=completed")
 			default:

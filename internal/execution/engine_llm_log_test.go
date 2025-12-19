@@ -74,7 +74,7 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	}
 
 	engine := &Engine{
-		client:         fakeModelClient{chunks: []string{"hello"}},
+		client:         fakeModelClient{chunks: []string{"hello"}, usage: &agent.TokenUsage{InputTokens: 12, OutputTokens: 5}},
 		requestTimeout: 500 * time.Millisecond,
 		retries:        0,
 	}
@@ -97,17 +97,17 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 			foundOut = true
 			tmp := e
 			outEntry = &tmp
-			dir, _ := e.Data["dir"].(string)
+			dir, _ := e.Data["direction"].(string)
 			if dir != llmDirAgentToLLM {
-				t.Fatalf("expected outgoing dir=%s, got %v (msg=%q)", llmDirAgentToLLM, e.Data["dir"], e.Message)
+				t.Fatalf("expected outgoing direction=%s, got %v (msg=%q)", llmDirAgentToLLM, e.Data["direction"], e.Message)
 			}
 		case strings.HasPrefix(e.Message, "llm->agent "):
 			foundIn = true
 			tmp := e
 			inEntry = &tmp
-			dir, _ := e.Data["dir"].(string)
+			dir, _ := e.Data["direction"].(string)
 			if dir != llmDirLLMToAgent {
-				t.Fatalf("expected incoming dir=%s, got %v (msg=%q)", llmDirLLMToAgent, e.Data["dir"], e.Message)
+				t.Fatalf("expected incoming direction=%s, got %v (msg=%q)", llmDirLLMToAgent, e.Data["direction"], e.Message)
 			}
 		}
 	}
@@ -122,6 +122,9 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	}
 	if _, ok := inEntry.Data["response_tokens"]; !ok {
 		t.Fatalf("expected response_tokens in incoming log: %+v", inEntry.Data)
+	}
+	if _, ok := inEntry.Data["usage_total_tokens"]; !ok {
+		t.Fatalf("expected usage_total_tokens in incoming log: %+v", inEntry.Data)
 	}
 	if payload, ok := outEntry.Data["request_payload"].(json.RawMessage); ok {
 		if !json.Valid(payload) {
@@ -194,8 +197,8 @@ func TestRunTaskLogsExitReasonToLLMLog(t *testing.T) {
 	if stage, _ := found.Data["exit_stage"].(string); stage != "final_no_responses" {
 		t.Fatalf("expected exit_stage=final_no_responses, got %v (msg=%q)", found.Data["exit_stage"], found.Message)
 	}
-	if dir, _ := found.Data["dir"].(string); dir != "agent" {
-		t.Fatalf("expected dir=agent, got %v (msg=%q)", found.Data["dir"], found.Message)
+	if dir, _ := found.Data["direction"].(string); dir != "agent" {
+		t.Fatalf("expected direction=agent, got %v (msg=%q)", found.Data["direction"], found.Message)
 	}
 }
 
