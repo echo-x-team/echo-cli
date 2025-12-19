@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,34 @@ func SetupComponentFile(component, logPath string) (*LogEntry, io.Closer, string
 	l := logrus.New()
 	l.SetReportCaller(true)
 	l.SetFormatter(PlainFormatter{})
+	l.SetOutput(f)
+
+	entry := logrus.NewEntry(l)
+	if component != "" {
+		entry = entry.WithField("component", component)
+	}
+	return entry, f, resolved, nil
+}
+
+// SetupComponentFilePrettyJSON 创建独立的 logger，输出 pretty JSON 到指定文件并附加 component 字段。
+// 适合需要结构化查看的日志（例如 LLM 交互日志）。
+func SetupComponentFilePrettyJSON(component, logPath string) (*LogEntry, io.Closer, string, error) {
+	f, resolved, err := openLogFile(logPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	l := logrus.New()
+	l.SetReportCaller(true)
+	l.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: time.RFC3339Nano,
+		PrettyPrint:     true,
+		CallerPrettyfier: func(frame *runtime.Frame) (function string, file string) {
+			if frame == nil {
+				return "", ""
+			}
+			return "", fmt.Sprintf("%s:%d", shortenFilePath(frame.File), frame.Line)
+		},
+	})
 	l.SetOutput(f)
 
 	entry := logrus.NewEntry(l)

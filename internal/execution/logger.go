@@ -89,7 +89,7 @@ func SetupLLMLog(logPath string) (io.Closer, string, error) {
 		logPath = DefaultLLMLogPath
 	}
 
-	entry, closer, resolved, err := logger.SetupComponentFile("llm", logPath)
+	entry, closer, resolved, err := logger.SetupComponentFilePrettyJSON("llm", logPath)
 	llmLogConfigured = true
 	llmLogPath = resolved
 	if err != nil {

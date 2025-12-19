@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"sync"
@@ -122,14 +123,14 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	if _, ok := inEntry.Data["response_tokens"]; !ok {
 		t.Fatalf("expected response_tokens in incoming log: %+v", inEntry.Data)
 	}
-	if payload, ok := outEntry.Data["request_payload"].(string); ok {
-		if strings.ContainsAny(payload, "\n\r") {
-			t.Fatalf("expected outgoing payload to be single-line, got %q", payload)
+	if payload, ok := outEntry.Data["request_payload"].(json.RawMessage); ok {
+		if !json.Valid(payload) {
+			t.Fatalf("expected outgoing payload to be valid json, got %q", string(payload))
 		}
 	}
-	if payload, ok := inEntry.Data["response_payload"].(string); ok {
-		if strings.ContainsAny(payload, "\n\r") {
-			t.Fatalf("expected incoming payload to be single-line, got %q", payload)
+	if payload, ok := inEntry.Data["response_payload"].(json.RawMessage); ok {
+		if !json.Valid(payload) {
+			t.Fatalf("expected incoming payload to be valid json, got %q", string(payload))
 		}
 	}
 }

@@ -623,7 +623,7 @@ type llmResponseLogPayload struct {
 }
 
 type llmEncodedLogJSON struct {
-	Payload string
+	Payload json.RawMessage
 	Bytes   int
 	Tokens  int64
 	Err     error
@@ -635,7 +635,7 @@ func encodeLLMLogJSON(value any) llmEncodedLogJSON {
 		return llmEncodedLogJSON{Err: err}
 	}
 	return llmEncodedLogJSON{
-		Payload: sanitizeLogText(string(raw)),
+		Payload: json.RawMessage(raw),
 		Bytes:   len(raw),
 		Tokens:  approxTokensFromBytes(len(raw)),
 	}
