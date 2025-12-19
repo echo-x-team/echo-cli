@@ -47,6 +47,11 @@ func main() {
 	} else if llmCloser != nil {
 		defer llmCloser.Close()
 	}
+	if taskCloser, _, err := execution.SetupTaskLog(execution.DefaultTaskLogPath); err != nil {
+		log.Warnf("failed to initialize task log (%s): %v", execution.DefaultTaskLogPath, err)
+	} else if taskCloser != nil {
+		defer taskCloser.Close()
+	}
 
 	root, rest, err := parseRootArgs(os.Args[1:])
 	if err != nil {

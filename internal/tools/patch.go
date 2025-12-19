@@ -184,6 +184,25 @@ func applyUpdate(workdir string, op patchOp) error {
 	}
 
 	origLines, hadTrailing := splitLines(string(data))
+	if shouldReplaceEntireFile(op.lines) {
+		content := joinReplacementLines(op.lines, hadTrailing)
+		if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(oldPath, []byte(content), fileMode); err != nil {
+			return err
+		}
+		if op.newPath != "" && op.newPath != op.path {
+			newPath := filepath.Join(workdir, op.newPath)
+			if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+				return err
+			}
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	updated, err := applyHunks(origLines, op.lines)
 	if err != nil {
 		return err
@@ -208,6 +227,40 @@ func applyUpdate(workdir string, op patchOp) error {
 		}
 	}
 	return nil
+}
+
+func joinReplacementLines(lines []string, hadTrailing bool) string {
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "@@") {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	content := strings.Join(cleaned, "\n")
+	if hadTrailing {
+		content += "\n"
+	}
+	return content
+}
+
+func shouldReplaceEntireFile(lines []string) bool {
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "@@") {
+			continue
+		}
+		switch line[0] {
+		case ' ', '+', '-':
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func splitLines(text string) ([]string, bool) {

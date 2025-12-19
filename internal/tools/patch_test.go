@@ -34,6 +34,57 @@ func TestApplyPatchBeginPatchUpdate(t *testing.T) {
 	}
 }
 
+func TestApplyPatchBeginPatchUpdateReplaceWholeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("old\ncontent\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	patch := `*** Begin Patch
+*** Update File: file.txt
+alpha
+beta
+*** End Patch`
+
+	if err := ApplyPatch(context.Background(), dir, patch); err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	if got := string(data); got != "alpha\nbeta\n" {
+		t.Fatalf("unexpected content: %q", got)
+	}
+}
+
+func TestApplyPatchBeginPatchUpdateReplaceWholeFileWithHunkHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("old\ncontent\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	patch := `*** Begin Patch
+*** Update File: file.txt
+@@
+alpha
+beta
+*** End Patch`
+
+	if err := ApplyPatch(context.Background(), dir, patch); err != nil {
+		t.Fatalf("apply patch: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	if got := string(data); got != "alpha\nbeta\n" {
+		t.Fatalf("unexpected content: %q", got)
+	}
+}
+
 func TestApplyPatchBeginPatchAddAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := filepath.Join(dir, "old.txt")

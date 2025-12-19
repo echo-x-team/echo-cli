@@ -13,12 +13,18 @@ const DefaultErrorLogPath = "logs/error.log"
 // DefaultLLMLogPath LLM 交互日志默认路径。
 const DefaultLLMLogPath = "logs/llm.log"
 
+// DefaultTaskLogPath 任务总结日志默认路径。
+const DefaultTaskLogPath = "logs/task.log"
+
 var (
 	// log 复用全局 logger。
 	log = logger.Named("engine")
 
 	// llmLog 标记 LLM 相关日志。
 	llmLog = logger.Named("llm")
+
+	// taskLog 任务总结日志。
+	taskLog = logger.Named("task")
 
 	// errorLog 专用错误日志。
 	errorLog = logger.Named("error")
@@ -32,6 +38,11 @@ var (
 	llmLogMu         sync.Mutex
 	llmLogCloser     io.Closer
 	llmLogPath       string
+
+	taskLogConfigured bool
+	taskLogMu         sync.Mutex
+	taskLogCloser     io.Closer
+	taskLogPath       string
 )
 
 // SetupErrorLog 配置 runTask 错误日志文件，返回 closer 及实际路径。
@@ -118,6 +129,48 @@ func ensureLLMLogger(logPath string) {
 	}
 }
 
+// SetupTaskLog 配置任务总结日志文件，返回 closer 及实际路径。
+// 若 logPath 为空，则使用 DefaultTaskLogPath。
+func SetupTaskLog(logPath string) (io.Closer, string, error) {
+	taskLogMu.Lock()
+	defer taskLogMu.Unlock()
+
+	if taskLogConfigured {
+		return taskLogCloser, taskLogPath, nil
+	}
+	if logPath == "" {
+		logPath = DefaultTaskLogPath
+	}
+
+	entry, closer, resolved, err := logger.SetupComponentFile("task", logPath)
+	taskLogConfigured = true
+	taskLogPath = resolved
+	if err != nil {
+		return nil, resolved, err
+	}
+	if entry != nil {
+		taskLog = entry
+	}
+	taskLogCloser = closer
+	return closer, resolved, nil
+}
+
+func ensureTaskLogger(logPath string) {
+	taskLogMu.Lock()
+	configured := taskLogConfigured
+	taskLogMu.Unlock()
+	if configured {
+		return
+	}
+	resolved := logPath
+	if resolved == "" {
+		resolved = DefaultTaskLogPath
+	}
+	if _, _, err := SetupTaskLog(logPath); err != nil {
+		logger.Named("task").Warnf("failed to initialize task log (%s): %v", resolved, err)
+	}
+}
+
 // CloseErrorLog 关闭错误日志文件句柄（如已初始化）。
 func CloseErrorLog() {
 	errorLogMu.Lock()
@@ -135,5 +188,15 @@ func CloseLLMLog() {
 	if llmLogCloser != nil {
 		_ = llmLogCloser.Close()
 		llmLogCloser = nil
+	}
+}
+
+// CloseTaskLog 关闭任务总结日志文件句柄（如已初始化）。
+func CloseTaskLog() {
+	taskLogMu.Lock()
+	defer taskLogMu.Unlock()
+	if taskLogCloser != nil {
+		_ = taskLogCloser.Close()
+		taskLogCloser = nil
 	}
 }

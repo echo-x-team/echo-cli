@@ -26,6 +26,7 @@ type Options struct {
 	Defaults       echocontext.SessionDefaults
 	ErrorLogPath   string
 	LLMLogPath     string
+	TaskLogPath    string
 	ToolTimeout    time.Duration
 	RequestTimeout time.Duration
 	Retries        int
@@ -73,6 +74,7 @@ func NewEngine(opts Options) *Engine {
 	}
 	ensureErrorLogger(opts.ErrorLogPath)
 	ensureLLMLogger(opts.LLMLogPath)
+	ensureTaskLogger(opts.TaskLogPath)
 	toolTimeout := opts.ToolTimeout
 	if toolTimeout == 0 {
 		toolTimeout = 2 * time.Minute
@@ -334,6 +336,9 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
 	defer stopTools()
 	publishedCalls := map[string]struct{}{}
+	turnIndex := 0
+	var lastSummary events.TaskSummary
+	hasSummary := false
 
 	exitReason := "unknown"
 	exitStage := "unknown"
@@ -341,7 +346,39 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	exitFinalContent := ""
 	exitFinalItems := 0
 
+	logSummary := func(kind string, summary events.TaskSummary, turnIndex int) {
+		fields := logger.Fields{
+			"session_id":    submission.SessionID,
+			"submission_id": submission.ID,
+			"status":        summary.Status,
+			"exit_reason":   summary.ExitReason,
+			"exit_stage":    summary.ExitStage,
+			"duration_ms":   summary.DurationMs,
+			"model":         summary.Model,
+			"input_tokens":  summary.InputTokens,
+			"output_tokens": summary.OutputTokens,
+			"turn_index":    turnIndex,
+		}
+		if summary.Error != "" {
+			fields["error"] = sanitizeLogText(summary.Error)
+		}
+		taskLog.WithField("type", kind).WithFields(fields).Info(summary.Text)
+	}
+
 	emitTurnSummary := func(turnCtx echocontext.TurnContext, started time.Time, finalContent string, toolResults []tools.ToolResult, reason string, stage string, err error) {
+		summary := buildTurnSummary(turnSummaryInput{
+			Submission:   submission,
+			TurnCtx:      turnCtx,
+			Start:        started,
+			FinalContent: finalContent,
+			ToolResults:  toolResults,
+			ExitReason:   reason,
+			ExitStage:    stage,
+			Err:          err,
+		})
+		lastSummary = summary
+		hasSummary = true
+		logSummary("turn.summary", summary, turnIndex)
 		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = emit.Publish(publishCtx, events.Event{
@@ -349,21 +386,26 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			SubmissionID: submission.ID,
 			SessionID:    submission.SessionID,
 			Timestamp:    time.Now(),
-			Payload: buildTurnSummary(turnSummaryInput{
-				Submission:   submission,
-				TurnCtx:      turnCtx,
-				Start:        started,
-				FinalContent: finalContent,
-				ToolResults:  toolResults,
-				ExitReason:   reason,
-				ExitStage:    stage,
-				Err:          err,
-			}),
-			Metadata: submission.Metadata,
+			Payload:      summary,
+			Metadata:     submission.Metadata,
 		})
 	}
 
 	defer func() {
+		if hasSummary {
+			taskSummary := lastSummary
+			if taskSummary.ExitReason == "" {
+				taskSummary.ExitReason = exitReason
+			}
+			if taskSummary.ExitStage == "" {
+				taskSummary.ExitStage = exitStage
+			}
+			if taskSummary.Error == "" && exitErr != nil {
+				taskSummary.Error = exitErr.Error()
+				taskSummary.Status = taskSummaryStatus(exitErr)
+			}
+			logSummary("task.summary", taskSummary, turnIndex)
+		}
 		fields := logger.Fields{
 			"session":      submission.SessionID,
 			"submission":   submission.ID,
@@ -384,6 +426,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	}()
 
 	for {
+		turnIndex++
 		if err := ctx.Err(); err != nil {
 			// Treat cancellation as an aborted turn to mirror Codex behaviour.
 			e.logRunTaskError(submission, "run_task", err, logger.Fields{
