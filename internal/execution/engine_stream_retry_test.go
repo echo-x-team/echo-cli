@@ -35,7 +35,7 @@ func (c *timedFlakyStreamClient) Stream(ctx context.Context, _ agent.Prompt, onE
 	return nil
 }
 
-func TestStreamPromptRetriesOnceOnInternalNetworkFailure(t *testing.T) {
+func TestStreamPromptRetriesAfterInternalNetworkFailure(t *testing.T) {
 	client := &timedFlakyStreamClient{
 		errs: []error{
 			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
@@ -58,6 +58,34 @@ func TestStreamPromptRetriesOnceOnInternalNetworkFailure(t *testing.T) {
 	}
 	if gap := client.callTimes[1].Sub(client.callTimes[0]); gap < engine.retryDelay {
 		t.Fatalf("expected retry delay >= %s, got %s", engine.retryDelay, gap)
+	}
+}
+
+func TestStreamPromptRetriesFiveTimesOnInternalNetworkFailure(t *testing.T) {
+	client := &timedFlakyStreamClient{
+		errs: []error{
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+			errors.New(`received error while streaming: {"type":"error","error":{"type":"api_error","message":"Internal Network Failure"}}`),
+		},
+	}
+
+	engine := &Engine{
+		client:         client,
+		requestTimeout: time.Second,
+		retries:        0,
+		retryDelay:     5 * time.Millisecond,
+	}
+
+	prompt := agent.Prompt{Model: "gpt-test"}
+	if err := engine.streamPrompt(context.Background(), events.Submission{}, prompt, func(agent.StreamEvent) {}); err == nil {
+		t.Fatalf("expected error")
+	}
+	if got := len(client.callTimes); got != 6 {
+		t.Fatalf("expected 6 stream attempts, got %d", got)
 	}
 }
 

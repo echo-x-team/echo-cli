@@ -990,8 +990,12 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+	internalNetworkRetries := maxRetries
+	if internalNetworkRetries < 5 {
+		internalNetworkRetries = 5
+	}
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		fields := logger.Fields{
 			"type":              "llm.request",
 			"session":           submission.SessionID,
@@ -1034,11 +1038,12 @@ func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission,
 		lastErr = err
 
 		// Anthropic 偶发返回 api_error: "Internal Network Failure"。
-		// 该错误通常是临时网络抖动，等待 1s 后重试一次可显著提升成功率。
-		if isInternalNetworkFailure(err) && maxRetries < 1 {
-			maxRetries = 1
+		// 该错误通常是临时网络抖动，至少重试 5 次可显著提升成功率。
+		retryLimit := maxRetries
+		if isInternalNetworkFailure(err) {
+			retryLimit = internalNetworkRetries
 		}
-		if attempt >= maxRetries {
+		if attempt >= retryLimit {
 			break
 		}
 		if isInternalNetworkFailure(err) {
