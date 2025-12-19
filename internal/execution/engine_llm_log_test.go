@@ -72,23 +72,6 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 		},
 	}
 
-	logPrompt(sub, prompt)
-	promptEntries := hook.snapshot()
-	if len(promptEntries) == 0 {
-		t.Fatalf("expected prompt logs")
-	}
-	for _, e := range promptEntries {
-		dir, _ := e.Data["dir"].(string)
-		if dir != llmDirAgentToLLM {
-			t.Fatalf("expected dir=%s, got %v (msg=%q)", llmDirAgentToLLM, e.Data["dir"], e.Message)
-		}
-		if !strings.HasPrefix(e.Message, "agent->llm ") {
-			t.Fatalf("expected agent->llm prefix, got %q", e.Message)
-		}
-	}
-
-	hook.reset()
-
 	engine := &Engine{
 		client:         fakeModelClient{chunks: []string{"hello"}},
 		requestTimeout: 500 * time.Millisecond,
@@ -97,23 +80,30 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := engine.streamPrompt(ctx, prompt, func(agent.StreamEvent) {}); err != nil {
-		t.Fatalf("streamPrompt failed: %v", err)
+	seq := 0
+	if _, err := engine.runModelInteraction(ctx, sub, prompt, discardPublisher{}, &seq); err != nil {
+		t.Fatalf("runModelInteraction failed: %v", err)
 	}
 
 	streamEntries := hook.snapshot()
 	foundOut := false
 	foundIn := false
+	var outEntry *capturedEntry
+	var inEntry *capturedEntry
 	for _, e := range streamEntries {
 		switch {
 		case strings.HasPrefix(e.Message, "agent->llm "):
 			foundOut = true
+			tmp := e
+			outEntry = &tmp
 			dir, _ := e.Data["dir"].(string)
 			if dir != llmDirAgentToLLM {
 				t.Fatalf("expected outgoing dir=%s, got %v (msg=%q)", llmDirAgentToLLM, e.Data["dir"], e.Message)
 			}
 		case strings.HasPrefix(e.Message, "llm->agent "):
 			foundIn = true
+			tmp := e
+			inEntry = &tmp
 			dir, _ := e.Data["dir"].(string)
 			if dir != llmDirLLMToAgent {
 				t.Fatalf("expected incoming dir=%s, got %v (msg=%q)", llmDirLLMToAgent, e.Data["dir"], e.Message)
@@ -122,6 +112,25 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	}
 	if !foundOut || !foundIn {
 		t.Fatalf("expected both outgoing and incoming llm logs, foundOut=%t foundIn=%t entries=%d", foundOut, foundIn, len(streamEntries))
+	}
+	if outEntry == nil || inEntry == nil {
+		t.Fatalf("expected captured entries, got out=%v in=%v", outEntry, inEntry)
+	}
+	if _, ok := outEntry.Data["request_tokens"]; !ok {
+		t.Fatalf("expected request_tokens in outgoing log: %+v", outEntry.Data)
+	}
+	if _, ok := inEntry.Data["response_tokens"]; !ok {
+		t.Fatalf("expected response_tokens in incoming log: %+v", inEntry.Data)
+	}
+	if payload, ok := outEntry.Data["request_payload"].(string); ok {
+		if strings.ContainsAny(payload, "\n\r") {
+			t.Fatalf("expected outgoing payload to be single-line, got %q", payload)
+		}
+	}
+	if payload, ok := inEntry.Data["response_payload"].(string); ok {
+		if strings.ContainsAny(payload, "\n\r") {
+			t.Fatalf("expected incoming payload to be single-line, got %q", payload)
+		}
 	}
 }
 

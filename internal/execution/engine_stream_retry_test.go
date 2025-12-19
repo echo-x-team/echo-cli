@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"echo-cli/internal/agent"
+	"echo-cli/internal/events"
 )
 
 type timedFlakyStreamClient struct {
@@ -49,7 +50,7 @@ func TestStreamPromptRetriesOnceOnInternalNetworkFailure(t *testing.T) {
 	}
 
 	prompt := agent.Prompt{Model: "gpt-test"}
-	if err := engine.streamPrompt(context.Background(), prompt, func(agent.StreamEvent) {}); err != nil {
+	if err := engine.streamPrompt(context.Background(), events.Submission{}, prompt, func(agent.StreamEvent) {}); err != nil {
 		t.Fatalf("streamPrompt failed: %v", err)
 	}
 	if got := len(client.callTimes); got != 2 {
@@ -73,7 +74,7 @@ func TestStreamPromptDoesNotRetryWhenRetriesZeroAndErrorNotInternalNetworkFailur
 	}
 
 	prompt := agent.Prompt{Model: "gpt-test"}
-	if err := engine.streamPrompt(context.Background(), prompt, func(agent.StreamEvent) {}); err == nil {
+	if err := engine.streamPrompt(context.Background(), events.Submission{}, prompt, func(agent.StreamEvent) {}); err == nil {
 		t.Fatalf("expected error")
 	}
 	if got := len(client.callTimes); got != 1 {

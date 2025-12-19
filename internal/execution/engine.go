@@ -450,7 +450,6 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 // runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
 func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx echocontext.TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, []tools.ToolResult, error) {
 	prompt := turnCtx.BuildPrompt()
-	logPrompt(submission, prompt)
 
 	output, err := e.runModelInteraction(ctx, submission, prompt, emit, seq)
 	if err != nil {
@@ -498,8 +497,9 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 // 对齐 Codex：拉取流式事件、发布增量输出、收集工具标记与 ResponseItem。
 func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt agent.Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
 	collector := newModelStreamCollector()
+	seqStart := *seq
 
-	err := e.streamPrompt(ctx, prompt, func(evt agent.StreamEvent) {
+	err := e.streamPrompt(ctx, submission, prompt, func(evt agent.StreamEvent) {
 		switch evt.Type {
 		case agent.StreamEventTextDelta:
 			if evt.Text == "" {
@@ -537,44 +537,31 @@ func (e *Engine) runModelInteraction(ctx context.Context, submission events.Subm
 
 	output := collector.Result()
 	in := llmIn()
-	if text := strings.TrimSpace(output.fullResponse); text != "" {
-		in.Infof(
-			"llm->agent response session=%s submission=%s model=%s len=%d content=%s",
-			submission.SessionID,
-			submission.ID,
-			prompt.Model,
-			len(output.fullResponse),
-			sanitizeLogText(output.fullResponse),
-		)
+	model := strings.TrimSpace(prompt.Model)
+	encoded := encodeLLMLogJSON(llmResponseLogPayload{
+		Model:    model,
+		Response: output.fullResponse,
+		Items:    output.items,
+	})
+	fields := logger.Fields{
+		"type":                 "llm.response",
+		"session":              submission.SessionID,
+		"submission":           submission.ID,
+		"model":                model,
+		"sequence_start":       seqStart,
+		"sequence_end":         *seq,
+		"response_items":       len(output.items),
+		"response_text_bytes":  len(output.fullResponse),
+		"response_text_tokens": int64(echocontext.ApproxTokenCount(output.fullResponse)),
+		"response_bytes":       encoded.Bytes,
+		"response_tokens":      encoded.Tokens,
+	}
+	if encoded.Err == nil {
+		fields["response_payload"] = encoded.Payload
 	} else {
-		in.Infof(
-			"llm->agent response session=%s submission=%s model=%s len=0",
-			submission.SessionID,
-			submission.ID,
-			prompt.Model,
-		)
+		fields["marshal_error"] = encoded.Err.Error()
 	}
-	if len(output.items) > 0 {
-		if encoded, err := json.MarshalIndent(output.items, "", "  "); err == nil {
-			in.Infof(
-				"llm->agent items session=%s submission=%s model=%s count=%d payload=%s",
-				submission.SessionID,
-				submission.ID,
-				prompt.Model,
-				len(output.items),
-				sanitizeLogText(string(encoded)),
-			)
-		} else {
-			in.Warnf(
-				"llm->agent items session=%s submission=%s model=%s count=%d marshal_error=%v",
-				submission.SessionID,
-				submission.ID,
-				prompt.Model,
-				len(output.items),
-				err,
-			)
-		}
-	}
+	in.WithFields(fields).Info("llm->agent response")
 
 	return output, nil
 }
@@ -629,17 +616,37 @@ func llmIn() *logger.LogEntry {
 	return llmLog.WithField("dir", llmDirLLMToAgent)
 }
 
-func logPrompt(submission events.Submission, prompt agent.Prompt) {
-	out := llmOut()
-	if encoded, err := json.MarshalIndent(prompt, "", "  "); err == nil {
-		out.Infof("agent->llm prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, sanitizeLogText(string(encoded)))
-	} else {
-		out.Warnf("agent->llm prompt session=%s submission=%s model=%s marshal_error=%v", submission.SessionID, submission.ID, prompt.Model, err)
+type llmResponseLogPayload struct {
+	Model    string                     `json:"model,omitempty"`
+	Response string                     `json:"response,omitempty"`
+	Items    []echocontext.ResponseItem `json:"items,omitempty"`
+}
+
+type llmEncodedLogJSON struct {
+	Payload string
+	Bytes   int
+	Tokens  int64
+	Err     error
+}
+
+func encodeLLMLogJSON(value any) llmEncodedLogJSON {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return llmEncodedLogJSON{Err: err}
 	}
-	out.Infof("agent->llm messages session=%s submission=%s model=%s count=%d", submission.SessionID, submission.ID, prompt.Model, len(prompt.Messages))
-	for i, msg := range prompt.Messages {
-		out.Infof("agent->llm message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
+	return llmEncodedLogJSON{
+		Payload: sanitizeLogText(string(raw)),
+		Bytes:   len(raw),
+		Tokens:  approxTokensFromBytes(len(raw)),
 	}
+}
+
+func approxTokensFromBytes(n int) int64 {
+	if n <= 0 {
+		return 0
+	}
+	// keep consistent with internal/context.ApproxTokenCount: ceil(len_bytes/4)
+	return int64((n + 4 - 1) / 4)
 }
 
 type modelStreamCollector struct {
@@ -754,7 +761,7 @@ func prettyPayloadBytesForLog(raw []byte, limit int) string {
 	return sanitizeLogText(pretty)
 }
 
-func (e *Engine) streamPrompt(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
+func (e *Engine) streamPrompt(ctx context.Context, submission events.Submission, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	out := llmOut()
 	in := llmIn()
 	messages := prompt.Messages
@@ -762,6 +769,7 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt agent.Prompt, onEvent 
 	if model == "" {
 		return errors.New("model not specified")
 	}
+	encoded := encodeLLMLogJSON(prompt)
 	retryDelay := e.retryDelay
 	if retryDelay <= 0 {
 		retryDelay = time.Second
@@ -772,21 +780,26 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt agent.Prompt, onEvent 
 	}
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		out.Infof(
-			"agent->llm request attempt=%d model=%s messages=%d tools=%d parallel_tools=%t output_schema_len=%d",
-			attempt+1,
-			model,
-			len(messages),
-			len(prompt.Tools),
-			prompt.ParallelToolCalls,
-			len(strings.TrimSpace(prompt.OutputSchema)),
-		)
-		// 首次请求的提示词已由 logPrompt 记录，这里仅在重试时重复打印。
-		if attempt > 0 {
-			for i, msg := range messages {
-				out.Infof("agent->llm message[%d] role=%s content=%s", i, msg.Role, sanitizeLogText(msg.Content))
-			}
+		fields := logger.Fields{
+			"type":              "llm.request",
+			"session":           submission.SessionID,
+			"submission":        submission.ID,
+			"model":             model,
+			"attempt":           attempt + 1,
+			"messages":          len(messages),
+			"tools":             len(prompt.Tools),
+			"parallel_tools":    prompt.ParallelToolCalls,
+			"output_schema_len": len(strings.TrimSpace(prompt.OutputSchema)),
+			"request_bytes":     encoded.Bytes,
+			"request_tokens":    encoded.Tokens,
 		}
+		if encoded.Err == nil {
+			fields["request_payload"] = encoded.Payload
+		} else {
+			fields["marshal_error"] = encoded.Err.Error()
+		}
+		out.WithFields(fields).Info("agent->llm request")
+
 		ctxRun, cancel := context.WithTimeout(ctx, e.requestTimeout)
 		err := e.client.Stream(ctxRun, prompt, func(evt agent.StreamEvent) {
 			switch evt.Type {
@@ -803,7 +816,6 @@ func (e *Engine) streamPrompt(ctx context.Context, prompt agent.Prompt, onEvent 
 		})
 		cancel()
 		if err == nil {
-			in.Infof("llm->agent stream completed attempt=%d model=%s", attempt+1, model)
 			return nil
 		}
 		in.Errorf("llm->agent error attempt=%d model=%s err=%v", attempt+1, model, err)
