@@ -329,9 +329,6 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx echoco
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
 // runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
 func (e *Engine) runTask(ctx context.Context, submission events.Submission, state echocontext.TurnState, emit events.EventPublisher) error {
-	start := time.Now()
-	summaryAcc := newTaskSummaryAccumulator(start)
-
 	seq := 0
 	turnCtx := state.Context
 	toolEvents, stopTools := e.subscribeToolEvents(ctx)
@@ -344,8 +341,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 	exitFinalContent := ""
 	exitFinalItems := 0
 
-	defer func() {
-		// Always emit a turn/task summary event, even when the task fails or is interrupted.
+	emitTurnSummary := func(turnCtx echocontext.TurnContext, started time.Time, finalContent string, toolResults []tools.ToolResult, reason string, stage string, err error) {
 		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = emit.Publish(publishCtx, events.Event{
@@ -353,17 +349,19 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			SubmissionID: submission.ID,
 			SessionID:    submission.SessionID,
 			Timestamp:    time.Now(),
-			Payload: summaryAcc.Build(
-				submission,
-				turnCtx,
-				exitReason,
-				exitStage,
-				exitFinalContent,
-				exitErr,
-			),
+			Payload: buildTurnSummary(turnSummaryInput{
+				Submission:   submission,
+				TurnCtx:      turnCtx,
+				Start:        started,
+				FinalContent: finalContent,
+				ToolResults:  toolResults,
+				ExitReason:   reason,
+				ExitStage:    stage,
+				Err:          err,
+			}),
 			Metadata: submission.Metadata,
 		})
-	}()
+	}
 
 	defer func() {
 		fields := logger.Fields{
@@ -398,6 +396,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			return err
 		}
 
+		turnStart := time.Now()
 		turn, toolResults, err := e.runTurn(ctx, submission, turnCtx, emit, &seq, toolEvents, publishedCalls)
 		if err != nil {
 			exitErr = err
@@ -411,12 +410,13 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 			} else {
 				exitReason = "error"
 			}
+			emitTurnSummary(turnCtx, turnStart, "", nil, exitReason, exitStage, err)
 			return err
 		}
-		summaryAcc.ObserveToolResults(toolResults)
 		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
 
 		if e.tokenLimitReached(turnCtx) {
+			emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
 			updated, compacted := e.runInlineAutoCompactTask(ctx, submission.SessionID, turnCtx)
 			if compacted {
 				turnCtx = updated
@@ -437,12 +437,14 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 				},
 				Metadata: submission.Metadata,
 			})
+			emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
 			exitReason = "completed_final"
 			exitStage = "final_no_responses"
 			exitFinalContent = turn.finalContent
 			exitFinalItems = len(turn.itemsToRecord)
 			return nil
 		}
+		emitTurnSummary(turnCtx, turnStart, turn.finalContent, toolResults, "", "", nil)
 	}
 
 }

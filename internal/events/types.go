@@ -75,7 +75,7 @@ type EventType string
 const (
 	EventSubmissionAccepted EventType = "submission.accepted"
 	EventTaskStarted        EventType = "task.started"
-	// EventTaskSummary 在一次 run_task/turn 结束后发出，用于汇总本次任务执行情况（成功/失败/中断均会发出）。
+	// EventTaskSummary 在每次 runTurn 结束后发出，用于汇总本轮完成内容与问题（成功/失败/中断均会发出）。
 	EventTaskSummary   EventType = "task.summary"
 	EventTaskCompleted EventType = "task.completed"
 	EventAgentOutput   EventType = "agent.output"
@@ -99,8 +99,8 @@ type TaskResult struct {
 	Error  string
 }
 
-// TaskSummary 描述一次任务（对用户而言的一次 turn）结束后的汇总信息。
-// Text 为面向用户的汇总文本；结构化字段用于 exec/TUI 做更丰富的渲染或后续扩展。
+// TaskSummary 描述一次 turn 结束后的汇总信息。
+// Text 为面向用户的汇总文本（包含完成工作/问题）；结构化字段用于 exec/TUI 做更丰富的渲染或后续扩展。
 type TaskSummary struct {
 	Status     string `json:"status"` // completed|failed|interrupted|timeout
 	Text       string `json:"text"`
