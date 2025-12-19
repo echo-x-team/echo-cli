@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"echo-cli/internal/agent"
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/prompts"
 	"echo-cli/internal/tools"
@@ -22,7 +23,7 @@ func TestEngineStreamsAndPersistsHistory(t *testing.T) {
 		Manager:  manager,
 		Client:   fakeModelClient{chunks: []string{"hello", " world"}},
 		Bus:      bus,
-		Defaults: SessionDefaults{Model: "gpt-test", System: "system"},
+		Defaults: echocontext.SessionDefaults{Model: "gpt-test", System: "system"},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,7 +110,7 @@ func TestEngineEmitsSummaryOnFailure(t *testing.T) {
 		Manager:  manager,
 		Client:   errorModelClient{err: errors.New("boom")},
 		Bus:      bus,
-		Defaults: SessionDefaults{Model: "gpt-test"},
+		Defaults: echocontext.SessionDefaults{Model: "gpt-test"},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -164,7 +165,7 @@ func TestEngineInterruptCancelsTurn(t *testing.T) {
 		Manager:  manager,
 		Client:   slowModelClient{delay: 150 * time.Millisecond, repeat: 5},
 		Bus:      bus,
-		Defaults: SessionDefaults{Model: "gpt-test"},
+		Defaults: echocontext.SessionDefaults{Model: "gpt-test"},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -242,7 +243,7 @@ func TestEngineLoopsToolsAndPersistsHistory(t *testing.T) {
 		Manager:     manager,
 		Client:      client,
 		Bus:         bus,
-		Defaults:    SessionDefaults{Model: "gpt-test", System: "system"},
+		Defaults:    echocontext.SessionDefaults{Model: "gpt-test", System: "system"},
 		ToolTimeout: time.Second,
 	})
 
@@ -344,7 +345,7 @@ func TestEngineEmitsPlanUpdatedEventOnUpdatePlanToolSuccess(t *testing.T) {
 		Manager:     manager,
 		Client:      client,
 		Bus:         bus,
-		Defaults:    SessionDefaults{Model: "gpt-test"},
+		Defaults:    echocontext.SessionDefaults{Model: "gpt-test"},
 		ToolTimeout: time.Second,
 	})
 
@@ -421,7 +422,7 @@ func TestEngineHandlesResponseItemsFromStream(t *testing.T) {
 		Manager:     manager,
 		Client:      client,
 		Bus:         bus,
-		Defaults:    SessionDefaults{Model: "gpt-test", System: "system"},
+		Defaults:    echocontext.SessionDefaults{Model: "gpt-test", System: "system"},
 		ToolTimeout: time.Second,
 	})
 
@@ -508,7 +509,7 @@ func TestEngineAddsLanguageDirectiveEveryModelCall(t *testing.T) {
 		Manager:     manager,
 		Client:      client,
 		Bus:         bus,
-		Defaults:    SessionDefaults{Model: "gpt-test"},
+		Defaults:    echocontext.SessionDefaults{Model: "gpt-test"},
 		ToolTimeout: time.Second,
 	})
 
@@ -641,9 +642,9 @@ func (c *toolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, onEven
 	default:
 	}
 	if c.calls == 1 {
-		item := ResponseItem{
-			Type: ResponseItemTypeFunctionCall,
-			FunctionCall: &FunctionCallResponseItem{
+		item := echocontext.ResponseItem{
+			Type: echocontext.ResponseItemTypeFunctionCall,
+			FunctionCall: &echocontext.FunctionCallResponseItem{
 				Name:      "command",
 				Arguments: `{"command":"echo hi"}`,
 				CallID:    "call-1",
@@ -675,9 +676,9 @@ func (c *planToolLoopModelClient) Stream(ctx context.Context, _ agent.Prompt, on
 	default:
 	}
 	if c.calls == 1 {
-		item := ResponseItem{
-			Type: ResponseItemTypeFunctionCall,
-			FunctionCall: &FunctionCallResponseItem{
+		item := echocontext.ResponseItem{
+			Type: echocontext.ResponseItemTypeFunctionCall,
+			FunctionCall: &echocontext.FunctionCallResponseItem{
 				Name:      "update_plan",
 				Arguments: `{"explanation":"because","plan":[{"step":"do x","status":"pending"}]}`,
 				CallID:    "plan-1",
@@ -709,9 +710,9 @@ func (c *responseItemModelClient) Stream(ctx context.Context, _ agent.Prompt, on
 	default:
 	}
 	if c.calls == 1 {
-		item := ResponseItem{
-			Type: ResponseItemTypeFunctionCall,
-			FunctionCall: &FunctionCallResponseItem{
+		item := echocontext.ResponseItem{
+			Type: echocontext.ResponseItemTypeFunctionCall,
+			FunctionCall: &echocontext.FunctionCallResponseItem{
 				Name:      "command",
 				Arguments: `{"command":"echo hi"}`,
 				CallID:    "call-item-1",
@@ -751,9 +752,9 @@ func (c *recordingLanguageModelClient) Stream(ctx context.Context, prompt agent.
 	}
 
 	if call == 1 {
-		item := ResponseItem{
-			Type: ResponseItemTypeFunctionCall,
-			FunctionCall: &FunctionCallResponseItem{
+		item := echocontext.ResponseItem{
+			Type: echocontext.ResponseItemTypeFunctionCall,
+			FunctionCall: &echocontext.FunctionCallResponseItem{
 				Name:      "command",
 				Arguments: `{"command":"echo hi"}`,
 				CallID:    "lang-1",

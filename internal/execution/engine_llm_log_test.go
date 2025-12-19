@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"echo-cli/internal/agent"
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"github.com/sirupsen/logrus"
 )
@@ -64,7 +65,7 @@ func TestLLMLogIncludesDirectionForPromptAndStream(t *testing.T) {
 	llmLog = logrus.NewEntry(l)
 
 	sub := events.Submission{SessionID: "sess-llm", ID: "sub-1"}
-	prompt := Prompt{
+	prompt := agent.Prompt{
 		Model: "gpt-test",
 		Messages: []agent.Message{
 			{Role: agent.RoleUser, Content: "hi"},
@@ -144,7 +145,7 @@ func TestRunTaskLogsExitReasonToLLMLog(t *testing.T) {
 	errorLog = logrus.NewEntry(l)
 
 	engine := &Engine{
-		contexts:       NewContextManager(SessionDefaults{Model: "gpt-test"}),
+		contexts:       echocontext.NewContextManager(echocontext.SessionDefaults{Model: "gpt-test"}),
 		client:         fakeModelClient{chunks: []string{"hello"}},
 		requestTimeout: 500 * time.Millisecond,
 		retries:        0,
@@ -152,8 +153,8 @@ func TestRunTaskLogsExitReasonToLLMLog(t *testing.T) {
 	}
 
 	sub := events.Submission{SessionID: "sess-exit", ID: "sub-exit"}
-	state := TurnState{
-		Context: TurnContext{
+	state := echocontext.TurnState{
+		Context: echocontext.TurnContext{
 			Model: "gpt-test",
 			History: []agent.Message{
 				{Role: agent.RoleUser, Content: "hi"},
@@ -204,7 +205,7 @@ func TestRunTaskLogsExitReasonWhenContextCancelled(t *testing.T) {
 	errorLog = logrus.NewEntry(l)
 
 	engine := &Engine{
-		contexts:       NewContextManager(SessionDefaults{Model: "gpt-test"}),
+		contexts:       echocontext.NewContextManager(echocontext.SessionDefaults{Model: "gpt-test"}),
 		client:         fakeModelClient{chunks: []string{"hello"}},
 		requestTimeout: 500 * time.Millisecond,
 		retries:        0,
@@ -212,7 +213,7 @@ func TestRunTaskLogsExitReasonWhenContextCancelled(t *testing.T) {
 	}
 
 	sub := events.Submission{SessionID: "sess-cancel", ID: "sub-cancel"}
-	state := TurnState{Context: TurnContext{Model: "gpt-test"}}
+	state := echocontext.TurnState{Context: echocontext.TurnContext{Model: "gpt-test"}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

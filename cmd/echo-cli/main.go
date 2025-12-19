@@ -12,6 +12,7 @@ import (
 	"echo-cli/internal/agent"
 	anthropicmodel "echo-cli/internal/agent/anthropic"
 	"echo-cli/internal/config"
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
 	"echo-cli/internal/i18n"
@@ -192,7 +193,7 @@ func startInteractiveSession(cli *interactiveArgs, seedMessages []agent.Message)
 		Manager:        manager,
 		Client:         client,
 		Bus:            bus,
-		Defaults:       execution.SessionDefaults{Model: rt.Model, System: system, ReasoningEffort: rt.ReasoningEffort, Language: rt.DefaultLanguage},
+		Defaults:       echocontext.SessionDefaults{Model: rt.Model, System: system, ReasoningEffort: rt.ReasoningEffort, Language: rt.DefaultLanguage},
 		ToolTimeout:    toolTimeout,
 		RequestTimeout: time.Duration(rt.RequestTimeoutSecs) * time.Second,
 		Retries:        rt.Retries,

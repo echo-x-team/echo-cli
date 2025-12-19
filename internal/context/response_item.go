@@ -1,4 +1,4 @@
-package execution
+package context
 
 import (
 	"encoding/json"
@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"echo-cli/internal/agent"
-	"echo-cli/internal/tools"
 )
 
 // ResponseItemType mirrors the tagged enum from codex-rs.
@@ -188,12 +187,6 @@ type GhostCommit struct {
 	ID string `json:"id,omitempty"`
 }
 
-// ProcessedResponseItem pairs a ResponseItem with an optional ResponseInputItem.
-type ProcessedResponseItem struct {
-	Item     ResponseItem
-	Response *ResponseInputItem
-}
-
 // ToResponseItem mirrors the Rust From<ResponseInputItem> implementation.
 func (r ResponseInputItem) ToResponseItem() ResponseItem {
 	switch r.Type {
@@ -213,6 +206,10 @@ func (r ResponseInputItem) ToResponseItem() ResponseItem {
 		}
 	}
 	return ResponseItem{Type: ResponseItemTypeOther}
+}
+
+func newMessageItem(msg MessageResponseItem) ResponseItem {
+	return ResponseItem{Type: ResponseItemTypeMessage, Message: &msg}
 }
 
 // NewAssistantMessageItem builds a simple assistant message response item.
@@ -369,28 +366,29 @@ func (r ResponseItem) MarshalJSON() ([]byte, error) {
 		}
 		return json.Marshal(payload)
 	}
-	// Fallback to a minimal tag.
+
+	// fallback
 	return json.Marshal(struct {
 		Type ResponseItemType `json:"type"`
-	}{Type: r.Type})
+	}{Type: ResponseItemTypeOther})
 }
 
 // UnmarshalJSON decodes tagged-union JSON into ResponseItem.
 func (r *ResponseItem) UnmarshalJSON(data []byte) error {
-	var probe struct {
+	var header struct {
 		Type ResponseItemType `json:"type"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := json.Unmarshal(data, &header); err != nil {
 		return err
 	}
-	r.Type = probe.Type
-	switch probe.Type {
+	r.Type = header.Type
+
+	switch header.Type {
 	case ResponseItemTypeMessage:
 		var payload struct {
-			Type    ResponseItemType `json:"type"`
-			ID      string           `json:"id,omitempty"`
-			Role    string           `json:"role"`
-			Content []ContentItem    `json:"content"`
+			ID      string        `json:"id,omitempty"`
+			Role    string        `json:"role"`
+			Content []ContentItem `json:"content"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
@@ -398,7 +396,6 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.Message = &MessageResponseItem{ID: payload.ID, Role: payload.Role, Content: payload.Content}
 	case ResponseItemTypeReasoning:
 		var payload struct {
-			Type             ResponseItemType                `json:"type"`
 			ID               string                          `json:"id,omitempty"`
 			Summary          []ReasoningItemReasoningSummary `json:"summary"`
 			Content          []ReasoningItemContent          `json:"content,omitempty"`
@@ -410,7 +407,6 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.Reasoning = &ReasoningResponseItem{ID: payload.ID, Summary: payload.Summary, Content: payload.Content, EncryptedContent: payload.EncryptedContent}
 	case ResponseItemTypeLocalShellCall:
 		var payload struct {
-			Type   ResponseItemType `json:"type"`
 			ID     string           `json:"id,omitempty"`
 			CallID string           `json:"call_id,omitempty"`
 			Status LocalShellStatus `json:"status"`
@@ -422,11 +418,10 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.LocalShellCall = &LocalShellCallResponseItem{ID: payload.ID, CallID: payload.CallID, Status: payload.Status, Action: payload.Action}
 	case ResponseItemTypeFunctionCall:
 		var payload struct {
-			Type      ResponseItemType `json:"type"`
-			ID        string           `json:"id,omitempty"`
-			Name      string           `json:"name"`
-			Arguments string           `json:"arguments"`
-			CallID    string           `json:"call_id"`
+			ID        string `json:"id,omitempty"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			CallID    string `json:"call_id"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
@@ -434,7 +429,6 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.FunctionCall = &FunctionCallResponseItem{ID: payload.ID, Name: payload.Name, Arguments: payload.Arguments, CallID: payload.CallID}
 	case ResponseItemTypeFunctionCallOutput:
 		var payload struct {
-			Type   ResponseItemType          `json:"type"`
 			CallID string                    `json:"call_id"`
 			Output FunctionCallOutputPayload `json:"output"`
 		}
@@ -444,10 +438,9 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.FunctionCallOutput = &FunctionCallOutputResponseItem{CallID: payload.CallID, Output: payload.Output}
 	case ResponseItemTypeWebSearchCall:
 		var payload struct {
-			Type   ResponseItemType `json:"type"`
-			ID     string           `json:"id,omitempty"`
-			Status string           `json:"status,omitempty"`
-			Action WebSearchAction  `json:"action"`
+			ID     string          `json:"id,omitempty"`
+			Status string          `json:"status,omitempty"`
+			Action WebSearchAction `json:"action"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
@@ -455,8 +448,7 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.WebSearchCall = &WebSearchCallResponseItem{ID: payload.ID, Status: payload.Status, Action: payload.Action}
 	case ResponseItemTypeGhostSnapshot:
 		var payload struct {
-			Type        ResponseItemType `json:"type"`
-			GhostCommit GhostCommit      `json:"ghost_commit"`
+			GhostCommit GhostCommit `json:"ghost_commit"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
@@ -464,111 +456,41 @@ func (r *ResponseItem) UnmarshalJSON(data []byte) error {
 		r.GhostSnapshot = &GhostSnapshotResponseItem{GhostCommit: payload.GhostCommit}
 	case ResponseItemTypeCompactionSummary:
 		var payload struct {
-			Type             ResponseItemType `json:"type"`
-			EncryptedContent string           `json:"encrypted_content"`
+			EncryptedContent string `json:"encrypted_content"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
 		r.CompactionSummary = &CompactionSummaryResponseItem{EncryptedContent: payload.EncryptedContent}
 	default:
-		r.Type = ResponseItemTypeOther
+		// ignore unknown variants
 	}
 	return nil
 }
 
-// newMessageItem wraps a message payload into a ResponseItem.
-func newMessageItem(msg MessageResponseItem) ResponseItem {
-	return ResponseItem{Type: ResponseItemTypeMessage, Message: &msg}
+// NormalizeRawJSON 将字符串规整为合法 JSON bytes（对齐 codex 行为：非 JSON 则按字符串编码）。
+func NormalizeRawJSON(text string) json.RawMessage {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return json.RawMessage("null")
+	}
+	data := []byte(trimmed)
+	if json.Valid(data) {
+		return json.RawMessage(data)
+	}
+	encoded, err := json.Marshal(trimmed)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(encoded)
 }
 
-// ResponseInputFromToolResult converts a ToolResult into a ResponseInputItem.
-func ResponseInputFromToolResult(result tools.ToolResult) ResponseInputItem {
-	success := result.Error == "" && result.ExitCode == 0 && strings.ToLower(result.Status) != "error"
-	content := result.Output
-	if content == "" && result.Error != "" {
-		content = result.Error
-	}
-	if content == "" && len(result.Plan) > 0 {
-		content = formatPlanText(result.Plan, result.Explanation)
-	}
-	if result.Kind == tools.ToolCommand {
-		out := map[string]any{
-			"output": strings.TrimRight(content, "\n"),
-		}
-		if strings.TrimSpace(result.SessionID) != "" {
-			out["session_id"] = strings.TrimSpace(result.SessionID)
-		} else {
-			out["exit_code"] = result.ExitCode
-		}
-		if strings.TrimSpace(result.Error) != "" {
-			out["error"] = strings.TrimSpace(result.Error)
-		}
-		if data, err := json.Marshal(out); err == nil {
-			content = string(data)
-		}
-	}
-	payload := FunctionCallOutputPayload{Content: content, Success: &success}
-	return ResponseInputItem{
-		Type: ResponseInputTypeFunctionCallOutput,
-		FunctionCallOutput: &FunctionCallOutputInput{
-			CallID: result.ID,
-			Output: payload,
-		},
-	}
-}
-
-// processedFromToolResults pairs tool outputs with their ResponseInputItem.
-func processedFromToolResults(results []tools.ToolResult) []ProcessedResponseItem {
-	items := make([]ProcessedResponseItem, 0, len(results))
-	for _, result := range results {
-		resp := ResponseInputFromToolResult(result)
-		items = append(items, ProcessedResponseItem{
-			Item:     resp.ToResponseItem(),
-			Response: &resp,
-		})
-	}
-	return items
-}
-
-// processedFromResponseItems wraps raw ResponseItem entries into ProcessedResponseItem for persistence.
-func processedFromResponseItems(items []ResponseItem) []ProcessedResponseItem {
-	out := make([]ProcessedResponseItem, 0, len(items))
+func ResponseItemsToAgentMessages(items []ResponseItem) []agent.Message {
+	out := make([]agent.Message, 0, len(items))
 	for _, item := range items {
-		out = append(out, ProcessedResponseItem{Item: item})
+		out = append(out, responseItemToAgentMessages(item)...)
 	}
 	return out
-}
-
-// formatPlanText mirrors the textual plan rendering used for tool results.
-func formatPlanText(plan []tools.PlanItem, explanation string) string {
-	var sb strings.Builder
-	if strings.TrimSpace(explanation) != "" {
-		sb.WriteString(strings.TrimSpace(explanation))
-	}
-	for _, item := range plan {
-		icon := "•"
-		switch item.Status {
-		case "completed":
-			icon = "✓"
-		case "in_progress":
-			icon = "→"
-		}
-		if sb.Len() > 0 {
-			sb.WriteString("\n")
-		}
-		sb.WriteString(fmt.Sprintf("- [%s] %s", icon, item.Step))
-	}
-	return sb.String()
-}
-
-// responseItemsToAgentMessages converts response items into agent messages for prompts.
-func responseItemsToAgentMessages(items []ResponseItem) []agent.Message {
-	var msgs []agent.Message
-	for _, item := range items {
-		msgs = append(msgs, responseItemToAgentMessages(item)...)
-	}
-	return msgs
 }
 
 func responseItemToAgentMessages(item ResponseItem) []agent.Message {
@@ -577,12 +499,12 @@ func responseItemToAgentMessages(item ResponseItem) []agent.Message {
 		if item.Message == nil {
 			return nil
 		}
-		return []agent.Message{{Role: agent.Role(item.Message.Role), Content: flattenContentItems(item.Message.Content)}}
+		return []agent.Message{{Role: agent.Role(item.Message.Role), Content: FlattenContentItems(item.Message.Content)}}
 	case ResponseItemTypeFunctionCall:
 		if item.FunctionCall == nil {
 			return nil
 		}
-		args := normalizeRawJSON(item.FunctionCall.Arguments)
+		args := NormalizeRawJSON(item.FunctionCall.Arguments)
 		content := fmt.Sprintf("[tool_use] %s (%s)", item.FunctionCall.Name, item.FunctionCall.CallID)
 		return []agent.Message{{
 			Role:    agent.RoleAssistant,
@@ -615,20 +537,17 @@ func responseItemToAgentMessages(item ResponseItem) []agent.Message {
 		if item.Reasoning == nil {
 			return nil
 		}
-		text := flattenReasoning(*item.Reasoning)
-		if text == "" {
+		text := FlattenReasoning(*item.Reasoning)
+		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return []agent.Message{{
-			Role:    agent.RoleAssistant,
-			Content: text,
-		}}
+		return []agent.Message{{Role: agent.RoleAssistant, Content: text}}
 	default:
 		return nil
 	}
 }
 
-func flattenContentItems(items []ContentItem) string {
+func FlattenContentItems(items []ContentItem) string {
 	var parts []string
 	for _, item := range items {
 		switch item.Type {
@@ -643,7 +562,7 @@ func flattenContentItems(items []ContentItem) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func flattenReasoning(item ReasoningResponseItem) string {
+func FlattenReasoning(item ReasoningResponseItem) string {
 	var parts []string
 	for _, summary := range item.Summary {
 		parts = append(parts, summary.Text)
@@ -654,11 +573,10 @@ func flattenReasoning(item ReasoningResponseItem) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// lastAssistantMessage extracts the last assistant message content in a turn.
-func lastAssistantMessage(items []ResponseItem) string {
+func LastAssistantMessage(items []ResponseItem) string {
 	for i := len(items) - 1; i >= 0; i-- {
 		if items[i].Type == ResponseItemTypeMessage && items[i].Message != nil && items[i].Message.Role == "assistant" {
-			return flattenContentItems(items[i].Message.Content)
+			return FlattenContentItems(items[i].Message.Content)
 		}
 	}
 	return ""

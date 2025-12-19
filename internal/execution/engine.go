@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"echo-cli/internal/agent"
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/logger"
 	"echo-cli/internal/tools"
@@ -22,7 +23,7 @@ type Options struct {
 	ManagerConfig  events.ManagerConfig
 	Client         agent.ModelClient
 	Bus            *events.Bus
-	Defaults       SessionDefaults
+	Defaults       echocontext.SessionDefaults
 	ErrorLogPath   string
 	LLMLogPath     string
 	ToolTimeout    time.Duration
@@ -34,7 +35,7 @@ type Options struct {
 // Engine 实现 SQ→核心→EQ 的执行流程。
 type Engine struct {
 	manager        *events.Manager
-	contexts       *ContextManager
+	contexts       *echocontext.ContextManager
 	client         agent.ModelClient
 	bus            *events.Bus
 	active         map[string]*taskHandle
@@ -86,7 +87,7 @@ func NewEngine(opts Options) *Engine {
 	}
 	return &Engine{
 		manager:        manager,
-		contexts:       NewContextManager(opts.Defaults),
+		contexts:       echocontext.NewContextManager(opts.Defaults),
 		client:         opts.Client,
 		bus:            opts.Bus,
 		active:         map[string]*taskHandle{},
@@ -198,15 +199,15 @@ func (e *Engine) handleApprovalDecision(ctx context.Context, submission events.S
 }
 
 type turnResult struct {
-	responses     []ResponseInputItem
-	itemsToRecord []ResponseItem
+	responses     []echocontext.ResponseInputItem
+	itemsToRecord []echocontext.ResponseItem
 	finalContent  string
 }
 
 type modelTurnOutput struct {
 	fullResponse string
 	toolCalls    []tools.ToolCall
-	items        []ResponseItem
+	items        []echocontext.ResponseItem
 }
 
 const toolErrorOutputLimit = 400
@@ -264,7 +265,7 @@ func findToolCall(calls []tools.ToolCall, id string) *tools.ToolCall {
 	return nil
 }
 
-func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnContext, seq int, call *tools.ToolCall, result tools.ToolResult) {
+func (e *Engine) logToolResultError(submission events.Submission, turnCtx echocontext.TurnContext, seq int, call *tools.ToolCall, result tools.ToolResult) {
 	reason := strings.TrimSpace(result.Error)
 	if reason == "" && result.ExitCode != 0 {
 		reason = fmt.Sprintf("non-zero exit code %d", result.ExitCode)
@@ -327,7 +328,7 @@ func (e *Engine) logToolResultError(submission events.Submission, turnCtx TurnCo
 
 // runTask 对应 codex-rs 的 run_task：负责回合循环，内部委托 runTurn 处理单轮。
 // runTurn 再拆分为模型交互 -> 工具识别 -> 工具路由 -> 工具执行四层。
-func (e *Engine) runTask(ctx context.Context, submission events.Submission, state TurnState, emit events.EventPublisher) error {
+func (e *Engine) runTask(ctx context.Context, submission events.Submission, state echocontext.TurnState, emit events.EventPublisher) error {
 	start := time.Now()
 	summaryAcc := newTaskSummaryAccumulator(start)
 
@@ -415,8 +416,11 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 		summaryAcc.ObserveToolResults(toolResults)
 		e.recordConversationItems(submission.SessionID, &turnCtx, turn.itemsToRecord)
 
-		if e.tokenLimitReached() {
-			e.runInlineAutoCompactTask(ctx, turnCtx)
+		if e.tokenLimitReached(turnCtx) {
+			updated, compacted := e.runInlineAutoCompactTask(ctx, submission.SessionID, turnCtx)
+			if compacted {
+				turnCtx = updated
+			}
 			continue
 		}
 
@@ -444,7 +448,7 @@ func (e *Engine) runTask(ctx context.Context, submission events.Submission, stat
 }
 
 // runTurn 将单轮拆分为模型交互（LLM 输出）、工具识别（标记转项）、工具路由（发布 marker）、工具执行（等待结果）。
-func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, []tools.ToolResult, error) {
+func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx echocontext.TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, []tools.ToolResult, error) {
 	prompt := turnCtx.BuildPrompt()
 	logPrompt(submission, prompt)
 
@@ -492,7 +496,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 
 // runModelInteraction 负责模型流式交互与输出收集，仅处理「模型交互」层。
 // 对齐 Codex：拉取流式事件、发布增量输出、收集工具标记与 ResponseItem。
-func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
+func (e *Engine) runModelInteraction(ctx context.Context, submission events.Submission, prompt agent.Prompt, emit events.EventPublisher, seq *int) (modelTurnOutput, error) {
 	collector := newModelStreamCollector()
 
 	err := e.streamPrompt(ctx, prompt, func(evt agent.StreamEvent) {
@@ -580,14 +584,14 @@ func (e *Engine) identifyTools(output modelTurnOutput) []ProcessedResponseItem {
 	processed := make([]ProcessedResponseItem, 0, len(output.items)+1)
 	processed = append(processed, processedFromResponseItems(output.items)...)
 	if strings.TrimSpace(output.fullResponse) != "" && !hasAssistantMessageItem(output.items) {
-		processed = append(processed, ProcessedResponseItem{Item: NewAssistantMessageItem(output.fullResponse)})
+		processed = append(processed, ProcessedResponseItem{Item: echocontext.NewAssistantMessageItem(output.fullResponse)})
 	}
 	return processed
 }
 
-func hasAssistantMessageItem(items []ResponseItem) bool {
+func hasAssistantMessageItem(items []echocontext.ResponseItem) bool {
 	for _, item := range items {
-		if item.Type == ResponseItemTypeMessage && item.Message != nil && item.Message.Role == "assistant" {
+		if item.Type == echocontext.ResponseItemTypeMessage && item.Message != nil && item.Message.Role == "assistant" {
 			return true
 		}
 	}
@@ -604,8 +608,8 @@ func (e *Engine) executeTools(ctx context.Context, calls []tools.ToolCall, toolE
 	return e.collectToolResults(ctx, calls, toolEvents)
 }
 
-func deriveFinalContent(fallback string, items []ResponseItem) string {
-	finalContent := lastAssistantMessage(items)
+func deriveFinalContent(fallback string, items []echocontext.ResponseItem) string {
+	finalContent := echocontext.LastAssistantMessage(items)
 	if finalContent == "" {
 		return fallback
 	}
@@ -625,7 +629,7 @@ func llmIn() *logger.LogEntry {
 	return llmLog.WithField("dir", llmDirLLMToAgent)
 }
 
-func logPrompt(submission events.Submission, prompt Prompt) {
+func logPrompt(submission events.Submission, prompt agent.Prompt) {
 	out := llmOut()
 	if encoded, err := json.MarshalIndent(prompt, "", "  "); err == nil {
 		out.Infof("agent->llm prompt session=%s submission=%s payload=%s", submission.SessionID, submission.ID, sanitizeLogText(string(encoded)))
@@ -641,7 +645,7 @@ func logPrompt(submission events.Submission, prompt Prompt) {
 type modelStreamCollector struct {
 	builder   strings.Builder
 	toolCalls []tools.ToolCall
-	items     []ResponseItem
+	items     []echocontext.ResponseItem
 	seenCalls map[string]struct{}
 }
 
@@ -659,7 +663,7 @@ func (c *modelStreamCollector) OnItem(raw json.RawMessage) {
 	if len(raw) == 0 {
 		return
 	}
-	var item ResponseItem
+	var item echocontext.ResponseItem
 	if err := json.Unmarshal(raw, &item); err != nil {
 		log.Warnf("parse stream item: %v", err)
 		return
@@ -690,8 +694,8 @@ func (c *modelStreamCollector) addToolCall(call tools.ToolCall, ok bool) {
 	c.toolCalls = append(c.toolCalls, call)
 }
 
-func toolCallFromResponseItem(item ResponseItem) (tools.ToolCall, bool) {
-	if item.Type != ResponseItemTypeFunctionCall || item.FunctionCall == nil {
+func toolCallFromResponseItem(item echocontext.ResponseItem) (tools.ToolCall, bool) {
+	if item.Type != echocontext.ResponseItemTypeFunctionCall || item.FunctionCall == nil {
 		return tools.ToolCall{}, false
 	}
 	if item.FunctionCall.Name == "" || item.FunctionCall.CallID == "" {
@@ -700,41 +704,25 @@ func toolCallFromResponseItem(item ResponseItem) (tools.ToolCall, bool) {
 	return tools.ToolCall{
 		ID:      item.FunctionCall.CallID,
 		Name:    item.FunctionCall.Name,
-		Payload: normalizeRawJSON(item.FunctionCall.Arguments),
+		Payload: echocontext.NormalizeRawJSON(item.FunctionCall.Arguments),
 	}, true
 }
 
-func textFromResponseItem(item ResponseItem) string {
+func textFromResponseItem(item echocontext.ResponseItem) string {
 	switch item.Type {
-	case ResponseItemTypeMessage:
+	case echocontext.ResponseItemTypeMessage:
 		if item.Message == nil {
 			return ""
 		}
-		return flattenContentItems(item.Message.Content)
-	case ResponseItemTypeReasoning:
+		return echocontext.FlattenContentItems(item.Message.Content)
+	case echocontext.ResponseItemTypeReasoning:
 		if item.Reasoning == nil {
 			return ""
 		}
-		return flattenReasoning(*item.Reasoning)
+		return echocontext.FlattenReasoning(*item.Reasoning)
 	default:
 		return ""
 	}
-}
-
-func normalizeRawJSON(text string) json.RawMessage {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return json.RawMessage("null")
-	}
-	data := []byte(trimmed)
-	if json.Valid(data) {
-		return json.RawMessage(data)
-	}
-	encoded, err := json.Marshal(trimmed)
-	if err != nil {
-		return json.RawMessage("null")
-	}
-	return json.RawMessage(encoded)
 }
 
 // prettyPayloadBytesForLog 尝试对 JSON bytes 做缩进美化，并在日志中保持单行输出。
@@ -766,7 +754,7 @@ func prettyPayloadBytesForLog(raw []byte, limit int) string {
 	return sanitizeLogText(pretty)
 }
 
-func (e *Engine) streamPrompt(ctx context.Context, prompt Prompt, onEvent func(agent.StreamEvent)) error {
+func (e *Engine) streamPrompt(ctx context.Context, prompt agent.Prompt, onEvent func(agent.StreamEvent)) error {
 	out := llmOut()
 	in := llmIn()
 	messages := prompt.Messages
@@ -1194,9 +1182,9 @@ func (e *Engine) publishPlanUpdates(ctx context.Context, submission events.Submi
 
 // processItems mirrors the codex.rs process_items helper: collect tool responses for the next turn
 // and return the list of items that should be recorded into the conversation history.
-func processItems(items []ProcessedResponseItem) ([]ResponseInputItem, []ResponseItem) {
-	responses := make([]ResponseInputItem, 0, len(items))
-	record := make([]ResponseItem, 0, len(items))
+func processItems(items []ProcessedResponseItem) ([]echocontext.ResponseInputItem, []echocontext.ResponseItem) {
+	responses := make([]echocontext.ResponseInputItem, 0, len(items))
+	record := make([]echocontext.ResponseItem, 0, len(items))
 	for _, item := range items {
 		record = append(record, item.Item)
 		if item.Response != nil {
@@ -1206,22 +1194,40 @@ func processItems(items []ProcessedResponseItem) ([]ResponseInputItem, []Respons
 	return responses, record
 }
 
-func (e *Engine) recordConversationItems(sessionID string, turnCtx *TurnContext, items []ResponseItem) {
+func (e *Engine) recordConversationItems(sessionID string, turnCtx *echocontext.TurnContext, items []echocontext.ResponseItem) {
 	if len(items) == 0 {
 		return
 	}
 	e.contexts.AppendResponseItems(sessionID, items)
 	turnCtx.ResponseHistory = append(turnCtx.ResponseHistory, items...)
-	turnCtx.History = append(turnCtx.History, responseItemsToAgentMessages(items)...)
+	turnCtx.History = append(turnCtx.History, echocontext.ResponseItemsToAgentMessages(items)...)
 }
 
-// tokenLimitReached is a stub for now; hook in real token accounting when available.
-func (e *Engine) tokenLimitReached() bool {
-	return false
+func (e *Engine) tokenLimitReached(turnCtx echocontext.TurnContext) bool {
+	window, ok := echocontext.ContextWindowForModel(turnCtx.Model)
+	if !ok || window <= 0 {
+		return false
+	}
+	limit := echocontext.DefaultAutoCompactLimit(window)
+	if limit <= 0 {
+		return false
+	}
+	estimated := echocontext.EstimatePromptTokens(turnCtx.BuildPrompt())
+	return estimated >= limit
 }
 
-// runInlineAutoCompactTask is a no-op placeholder to keep control flow aligned with the Codex reference.
-func (e *Engine) runInlineAutoCompactTask(ctx context.Context, turnCtx TurnContext) {
-	_ = ctx
-	log.Infof("token limit reached for model=%s; auto-compaction not implemented", turnCtx.Model)
+func (e *Engine) runInlineAutoCompactTask(ctx context.Context, sessionID string, turnCtx echocontext.TurnContext) (echocontext.TurnContext, bool) {
+	if e.client == nil {
+		return turnCtx, false
+	}
+	newHistory, trimmed, _, err := echocontext.CompactConversationHistory(ctx, e.client, turnCtx, turnCtx.ResponseHistory)
+	if err != nil {
+		log.Warnf("auto-compaction failed model=%s trimmed=%d err=%v", turnCtx.Model, trimmed, err)
+		return turnCtx, false
+	}
+	e.contexts.ReplaceHistory(sessionID, newHistory)
+	turnCtx.ResponseHistory = newHistory
+	turnCtx.History = echocontext.ResponseItemsToAgentMessages(newHistory)
+	log.Infof("auto-compaction completed model=%s trimmed=%d new_items=%d", turnCtx.Model, trimmed, len(newHistory))
+	return turnCtx, true
 }

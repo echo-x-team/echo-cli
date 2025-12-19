@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/tools"
 	"github.com/sirupsen/logrus"
@@ -26,7 +27,7 @@ func TestToolResultErrorLogIncludesPayloadAndPatchContext(t *testing.T) {
 		ID:        "sub-1",
 		Operation: events.Operation{Kind: events.OperationUserInput},
 	}
-	turnCtx := TurnContext{Model: "gpt-test"}
+	turnCtx := echocontext.TurnContext{Model: "gpt-test"}
 
 	call := &tools.ToolCall{
 		ID:      "call-1",

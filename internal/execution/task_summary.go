@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/tools"
 )
@@ -46,7 +47,7 @@ func (a *taskSummaryAccumulator) ObserveToolResults(results []tools.ToolResult) 
 
 func (a *taskSummaryAccumulator) Build(
 	submission events.Submission,
-	turnCtx TurnContext,
+	turnCtx echocontext.TurnContext,
 	exitReason string,
 	exitStage string,
 	finalContent string,
@@ -120,7 +121,7 @@ func countApproxTokensFromInput(submission events.Submission) int64 {
 }
 
 func countApproxTokens(text string) int64 {
-	return int64(len(strings.Fields(text)))
+	return int64(echocontext.ApproxTokenCount(text))
 }
 
 type taskSummaryTextArgs struct {

@@ -13,6 +13,7 @@ import (
 
 	"echo-cli/internal/agent"
 	"echo-cli/internal/config"
+	echocontext "echo-cli/internal/context"
 	"echo-cli/internal/events"
 	"echo-cli/internal/execution"
 	"echo-cli/internal/history"
@@ -243,7 +244,7 @@ func execMain(root rootArgs, args []string) {
 		Manager:        manager,
 		Client:         client,
 		Bus:            bus,
-		Defaults:       execution.SessionDefaults{Model: rt.Model, System: system, OutputSchema: outputSchemaContent, ReasoningEffort: rt.ReasoningEffort, ReviewMode: reviewMode, Language: rt.DefaultLanguage},
+		Defaults:       echocontext.SessionDefaults{Model: rt.Model, System: system, OutputSchema: outputSchemaContent, ReasoningEffort: rt.ReasoningEffort, ReviewMode: reviewMode, Language: rt.DefaultLanguage},
 		ToolTimeout:    toolTimeout,
 		RequestTimeout: time.Duration(rt.RequestTimeoutSecs) * time.Second,
 		Retries:        rt.Retries,

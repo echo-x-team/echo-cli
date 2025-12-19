@@ -48,7 +48,7 @@ func TestStreamPromptRetriesOnceOnInternalNetworkFailure(t *testing.T) {
 		retryDelay:     20 * time.Millisecond,
 	}
 
-	prompt := Prompt{Model: "gpt-test"}
+	prompt := agent.Prompt{Model: "gpt-test"}
 	if err := engine.streamPrompt(context.Background(), prompt, func(agent.StreamEvent) {}); err != nil {
 		t.Fatalf("streamPrompt failed: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestStreamPromptDoesNotRetryWhenRetriesZeroAndErrorNotInternalNetworkFailur
 		retryDelay:     20 * time.Millisecond,
 	}
 
-	prompt := Prompt{Model: "gpt-test"}
+	prompt := agent.Prompt{Model: "gpt-test"}
 	if err := engine.streamPrompt(context.Background(), prompt, func(agent.StreamEvent) {}); err == nil {
 		t.Fatalf("expected error")
 	}

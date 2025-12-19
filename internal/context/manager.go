@@ -1,4 +1,4 @@
-package execution
+package context
 
 import (
 	"sync"
@@ -26,6 +26,7 @@ type sessionState struct {
 	reasoningEffort string
 	reviewMode      bool
 	language        string
+
 	history         []agent.Message
 	responseHistory []ResponseItem
 }
@@ -41,8 +42,9 @@ type TurnContext struct {
 	ReviewMode      bool            // 是否启用审查模式
 	Attachments     []agent.Message // 附件内容（文件、图片等）
 	History         []agent.Message // 纯对话历史（不包括系统注入的内容）
-	AttachmentItems []ResponseItem  // 附件的 ResponseItem 表示
-	ResponseHistory []ResponseItem  // 纯对话历史（ResponseItem 形态）
+
+	AttachmentItems []ResponseItem // 附件的 ResponseItem 表示
+	ResponseHistory []ResponseItem // 纯对话历史（ResponseItem 形态）
 }
 
 // TurnState 描述一次回合所需的上下文与模型信息。
@@ -82,7 +84,7 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 	// 构建纯对话历史（不包含系统注入的内容）
 	history := make([]agent.Message, 0, len(state.history)+len(items))
 	responseHistory := make([]ResponseItem, 0, len(state.responseHistory)+len(items))
-	history = append(history, state.history...) // existing history first
+	history = append(history, state.history...)
 	responseHistory = append(responseHistory, state.responseHistory...)
 
 	// 转换当前用户输入为消息
@@ -123,12 +125,10 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 	if ctx.Language != "" {
 		language = ctx.Language
 	}
-	// 注意：ReviewMode 采用或逻辑，只要任一处为 true 就启用
 	if ctx.ReviewMode {
 		reviewMode = true
 	}
 
-	// 转换附件为 agent.Message 格式
 	attachments := toAgentMessages(ctx.Attachments)
 	attachmentItems := toResponseItems(ctx.Attachments)
 
@@ -146,7 +146,7 @@ func (m *ContextManager) PrepareTurn(sessionID string, ctx events.InputContext, 
 			Language:        language,
 			Attachments:     attachments,
 			AttachmentItems: attachmentItems,
-			History:         history, // 纯对话历史，不包含系统注入的内容
+			History:         history,
 			ResponseHistory: responseHistory,
 		},
 	}
@@ -199,15 +199,25 @@ func (m *ContextManager) ResponseHistory(sessionID string) []ResponseItem {
 	return history
 }
 
-// AppendResponseItems 追加 ResponseItem 并同步生成 prompt 消息。
+// AppendResponseItems 追加 ResponseItem 并同步生成 prompt 消息；同时对工具输出做截断以对齐 codex。
 func (m *ContextManager) AppendResponseItems(sessionID string, items []ResponseItem) {
 	if len(items) == 0 {
 		return
 	}
 	m.mu.Lock()
 	state := m.ensureSession(sessionID, events.InputContext{})
-	state.responseHistory = append(state.responseHistory, items...)
-	state.history = append(state.history, responseItemsToAgentMessages(items)...)
+	processed := processResponseItemsForHistory(items)
+	state.responseHistory = append(state.responseHistory, processed...)
+	state.history = append(state.history, ResponseItemsToAgentMessages(processed)...)
+	m.mu.Unlock()
+}
+
+func (m *ContextManager) ReplaceHistory(sessionID string, items []ResponseItem) {
+	m.mu.Lock()
+	state := m.ensureSession(sessionID, events.InputContext{})
+	processed := processResponseItemsForHistory(items)
+	state.responseHistory = processed
+	state.history = ResponseItemsToAgentMessages(processed)
 	m.mu.Unlock()
 }
 
@@ -217,7 +227,6 @@ func (m *ContextManager) ensureSession(sessionID string, ctx events.InputContext
 		return state
 	}
 
-	// 从默认值开始初始化
 	model := m.defaults.Model
 	system := m.defaults.System
 	outputSchema := m.defaults.OutputSchema
@@ -226,7 +235,6 @@ func (m *ContextManager) ensureSession(sessionID string, ctx events.InputContext
 	reviewMode := m.defaults.ReviewMode
 	language := m.defaults.Language
 
-	// InputContext 中的值会覆盖默认值
 	if ctx.Model != "" {
 		model = ctx.Model
 	}
