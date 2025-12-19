@@ -84,7 +84,20 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 	model := string(c.resolveModel(prompt.Model))
 	summary := streamSummary{}
 	logSummary := newStreamSummaryLogger(model, &summary)
+	rawCapture := newRawStreamCapture()
+	emittedText := false
+	emittedItem := false
 	wrappedOnEvent := func(evt agent.StreamEvent) {
+		switch evt.Type {
+		case agent.StreamEventTextDelta:
+			if evt.Text != "" {
+				emittedText = true
+			}
+		case agent.StreamEventItem:
+			if len(evt.Item) > 0 {
+				emittedItem = true
+			}
+		}
 		if evt.Type == agent.StreamEventCompleted {
 			evt.StopReason = summary.stopReason
 			evt.StopSequence = summary.stopSequence
@@ -96,6 +109,13 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 	for stream.Next() {
 		event := stream.Current()
 		variant := event.AsAny()
+		raw := strings.TrimSpace(event.RawJSON())
+		if raw == "" {
+			if fallback, err := json.Marshal(variant); err == nil {
+				raw = string(fallback)
+			}
+		}
+		rawCapture.Add(raw)
 		switch v := variant.(type) {
 		case anthropic.MessageDeltaEvent:
 			if v.Delta.StopReason != "" {
@@ -118,6 +138,7 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 		}
 		if state.Handle(variant, wrappedOnEvent) {
 			logSummary(nil)
+			rawCapture.LogIfEmpty(model, emittedText, emittedItem)
 			return nil
 		}
 	}
@@ -128,6 +149,7 @@ func (c *Client) Stream(ctx context.Context, prompt agent.Prompt, onEvent func(a
 	state.Flush(wrappedOnEvent)
 	wrappedOnEvent(agent.StreamEvent{Type: agent.StreamEventCompleted})
 	logSummary(nil)
+	rawCapture.LogIfEmpty(model, emittedText, emittedItem)
 	return nil
 }
 
@@ -287,6 +309,55 @@ type streamSummary struct {
 	stopSequence       string
 	finishReason       string
 	rawDeltaHasContent bool
+}
+
+type rawStreamCapture struct {
+	events    []string
+	bytes     int
+	truncated bool
+}
+
+const (
+	rawStreamMaxEvents = 64
+	rawStreamMaxBytes  = 16 * 1024
+)
+
+func newRawStreamCapture() *rawStreamCapture {
+	return &rawStreamCapture{}
+}
+
+func (c *rawStreamCapture) Add(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || c.truncated {
+		return
+	}
+	raw = sanitizeRawLogText(raw)
+	if len(c.events) >= rawStreamMaxEvents || c.bytes+len(raw) > rawStreamMaxBytes {
+		c.truncated = true
+		return
+	}
+	c.events = append(c.events, raw)
+	c.bytes += len(raw)
+}
+
+func (c *rawStreamCapture) LogIfEmpty(model string, emittedText bool, emittedItem bool) {
+	if emittedText || emittedItem {
+		return
+	}
+	fields := logger.Fields{
+		"model":              model,
+		"raw_event_count":    len(c.events),
+		"raw_event_bytes":    c.bytes,
+		"raw_events":         c.events,
+		"raw_events_limited": c.truncated,
+	}
+	streamLog.WithFields(fields).Info("llm stream empty response raw events")
+}
+
+func sanitizeRawLogText(text string) string {
+	text = strings.ReplaceAll(text, "\n", `\n`)
+	text = strings.ReplaceAll(text, "\r", `\r`)
+	return text
 }
 
 func newStreamSummaryLogger(model string, summary *streamSummary) func(error) {
