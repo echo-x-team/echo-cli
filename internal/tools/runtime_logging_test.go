@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"echo-cli/internal/logger"
 	"github.com/sirupsen/logrus"
@@ -52,7 +53,7 @@ func TestToolsLogIncludesPayloadOnCallAndResult(t *testing.T) {
 	}
 
 	logToolRequest(call, ToolCommand, true, "wd")
-	logToolResult(call, ToolCommand, ToolResult{ID: "1", Kind: ToolCommand, Status: "error", Error: "boom\nfail", ExitCode: 7}, "wd")
+	logToolResult(call, ToolCommand, ToolResult{ID: "1", Kind: ToolCommand, Status: "error", Error: "boom\nfail", ExitCode: 7}, "wd", 120*time.Millisecond)
 
 	out := buf.String()
 	if !strings.Contains(out, "tool_call id=1 name=command") {
@@ -66,5 +67,8 @@ func TestToolsLogIncludesPayloadOnCallAndResult(t *testing.T) {
 	}
 	if !strings.Contains(out, "error=boom\\nfail") {
 		t.Fatalf("expected sanitized error in log, got:\n%s", out)
+	}
+	if !strings.Contains(out, "duration_ms=120") {
+		t.Fatalf("expected duration in log, got:\n%s", out)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Runtime 协调路由与并行控制。
@@ -66,7 +67,7 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 	if !ok {
 		res := ToolResult{ID: call.ID, Status: "error", Error: "unknown tool", Kind: ToolKind("unknown")}
 		emit(ToolEvent{Type: "item.completed", Result: res})
-		logToolResult(call, kind, res, r.workdir)
+		logToolResult(call, kind, res, r.workdir, 0)
 		return res, fmt.Errorf("unknown tool: %s", call.Name)
 	}
 
@@ -85,8 +86,9 @@ func (r *Runtime) Dispatch(ctx context.Context, call ToolCall, emit func(ToolEve
 		defer r.lock.Unlock()
 	}
 
+	start := time.Now()
 	result := r.orchestrator.Run(ctx, inv, handler, emit)
-	logToolResult(call, kind, result, r.workdir)
+	logToolResult(call, kind, result, r.workdir, time.Since(start))
 	return result, nil
 }
 
@@ -116,7 +118,7 @@ func logToolRequest(call ToolCall, kind ToolKind, recognized bool, workdir strin
 		call.ID, call.Name, kind, status, wd, payload)
 }
 
-func logToolResult(call ToolCall, kind ToolKind, result ToolResult, workdir string) {
+func logToolResult(call ToolCall, kind ToolKind, result ToolResult, workdir string, duration time.Duration) {
 	ensureToolsLogger()
 
 	payload := "(empty)"
@@ -131,8 +133,8 @@ func logToolResult(call ToolCall, kind ToolKind, result ToolResult, workdir stri
 	if strings.TrimSpace(errText) == "" {
 		errText = "(empty)"
 	}
-	toolsLog.Infof("tool_result id=%s name=%s kind=%s status=%s workdir=%s exit_code=%d error=%s payload=%s",
-		call.ID, call.Name, kind, result.Status, wd, result.ExitCode, errText, payload)
+	toolsLog.Infof("tool_result id=%s name=%s kind=%s status=%s workdir=%s exit_code=%d duration_ms=%d error=%s payload=%s",
+		call.ID, call.Name, kind, result.Status, wd, result.ExitCode, duration.Milliseconds(), errText, payload)
 }
 
 func sanitizeForLog(raw []byte) string {

@@ -654,10 +654,14 @@ func runTaskStateFromContext(ctx context.Context) *runTaskState {
 func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turnCtx echocontext.TurnContext, emit events.EventPublisher, seq *int, toolEvents <-chan tools.ToolEvent, publishedCalls map[string]struct{}) (turnResult, []tools.ToolResult, error) {
 	prompt := turnCtx.BuildPrompt()
 
+	modelStart := time.Now()
+	log.Infof("run_task.model_interaction start session=%s submission=%s model=%s sequence=%d", submission.SessionID, submission.ID, turnCtx.Model, *seq)
 	output, err := e.runModelInteraction(ctx, submission, prompt, emit, seq)
 	if err != nil {
+		log.Infof("run_task.model_interaction finish status=error duration_ms=%d err=%v timeout=%t", time.Since(modelStart).Milliseconds(), err, errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled))
 		return turnResult{}, nil, stageError{Stage: "model_interaction", Err: err}
 	}
+	log.Infof("run_task.model_interaction finish status=ok duration_ms=%d response_items=%d tool_calls=%d", time.Since(modelStart).Milliseconds(), len(output.items), len(output.toolCalls))
 
 	processed := e.identifyTools(output)
 
@@ -670,8 +674,12 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 
 	e.routeTools(toolCtx, submission, output.toolCalls, publishedCalls)
 
+	toolIDs := collectToolCallIDs(output.toolCalls)
+	toolStart := time.Now()
+	log.Infof("run_task.tool_execution start tool_count=%d tool_ids=%s", len(toolIDs), strings.Join(toolIDs, ","))
 	results, err := e.executeTools(toolCtx, output.toolCalls, toolEvents)
 	if err != nil {
+		log.Infof("run_task.tool_execution finish status=error duration_ms=%d err=%v timeout=%t tool_count=%d", time.Since(toolStart).Milliseconds(), err, errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled), len(toolIDs))
 		e.logRunTaskError(submission, "tool_execution", err, logger.Fields{
 			"model":      turnCtx.Model,
 			"sequence":   *seq,
@@ -680,6 +688,7 @@ func (e *Engine) runTurn(ctx context.Context, submission events.Submission, turn
 		})
 		return turnResult{}, nil, stageError{Stage: "tool_execution", Err: err}
 	}
+	log.Infof("run_task.tool_execution finish status=ok duration_ms=%d tool_count=%d", time.Since(toolStart).Milliseconds(), len(results))
 	for _, res := range results {
 		call := findToolCall(output.toolCalls, res.ID)
 		e.logToolResultError(submission, turnCtx, *seq, call, res)
